@@ -113,14 +113,16 @@ plugin_manager install_bundle(target="<本仓库目录>")
 
 ## 7. 提交与推送
 
-沿用工作区根 `AGENTS.md`，此处只重复最容易犯的：
+沿用工作区根 `AGENTS.md`，本节写成自包含的完整版（这些是铁律，一条都别省）：
 
-- 提交信息：`范围: 改了什么(为什么)`，范围用 `check`/`scripts`/`docs`/`chore`。**必须写清为什么**（回溯时 `git log --oneline` 是唯一线索）。
-- **一改动一 push**：一个 commit 只说一件事，立刻 `git push origin main`。
-- **判 push 成功别看 exit code**：PowerShell 5.1 会把 `git push` 的进度行当 NativeCommandError 返回 1。以 `git status -sb` 显示 `## main...origin/main`（**无 `ahead`**）或 `git log --oneline -1 origin/main` 等于本地 HEAD 为准。push 失败要当场报原文并停下。
-- **禁止**：`git reset --hard`、`git checkout -- .`、`git clean -fd`、`git push --force`。需要回退只做 `git revert`。
+- **提交信息**：中文，格式 `范围: 改了什么(为什么)`，范围用 `check`/`scripts`/`docs`/`chore`。**必须写清为什么**（回溯时 `git log --oneline` 是唯一线索）。
+- **一修改一 push（铁律）**：每完成一处改动就 `git commit` + `git push origin main`，立刻推到远端，不许攒着、不留「等攒多点再一起推」。本地历史一次 `reset` 就没了，远端是唯一能追溯的底。中途干了多件事要拆成多个 commit 分别推，**一个 commit 只说一件事**，这样回溯时能精确 revert 单个改动。
+- **push 失败（网络 / 凭据 / 远端拒绝）必须当场报出原文错误**并停下，不许静默跳过、不许改成本地攒着；确认远端真推上去了再继续下一步。
+- **怎么判断 push 成功**：PowerShell 5.1 会把 `git push` 的进度行（`To github.com:...`）当 NativeCommandError、即使成功也返回 exit 1，别被退出码骗了。以 `git status -sb` 显示 `## main...origin/main`（**无 `ahead`**）或 `git log --oneline -1 origin/main` 等于本地 HEAD 为准。
+- **动仓库前先看状态**：`git status` + `git log --oneline -3` + `git remote -v`。2026-11-12 出现过另一个会话在同一仓库并行改文件（根 README 被整体重写并单独提交），`git add -A` 会把别人的改动一起卷进你的 commit——发现工作区有**不是你改的**东西，先问，别一键全加。
+- **禁止**：`git reset --hard`、`git checkout -- .`、`git clean -fd`、`git push --force`。需要回退只做 `git revert`（留痕），或先问用户。
+- **git 操作只在项目目录内做**，不跨仓库 `git add`。
 - **每次 commit 前做隐私扫描**（见 §5.5）：对已暂存内容扫关键词（`token`/`cookie`/`secret`/`password`/`Bearer`/手机号/身份证/本机绝对路径前缀/本机私有项目名/本机号主标识），命中即停，处理完重扫。
-- 动仓库前先 `git status` + `git log --oneline -3`；工作区里有**不是你改的**文件，先问，别 `git add -A` 一键全加。
 
 ---
 
