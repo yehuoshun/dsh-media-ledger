@@ -8,6 +8,8 @@
  * @module dsh-media-ledger
  */
 
+import fs from 'node:fs';
+
 import { makeBridgeRoutes } from './lib/bridge.js';
 import { resolveConfig } from './lib/config.js';
 import { registerTools } from './lib/tool.js';
@@ -21,8 +23,31 @@ export const inject = ['tools'];
  * @param {any} ctx
  * @param {any} rawConfig `cordis.patch.yml` 里这一行的 config
  */
+/**
+ * 工作区根提示：交给 store.js 的 `config.workspaceRoot`，返回函数而不是字符串，
+ * 因为 workspaceRegistry 可能在我们 apply 之后才就绪，推迟到每次解析目录时再问一次。
+ * 桌面版的宿主进程 cwd 常常是安装目录或用户目录，光靠 cwd 向上找标记会找不到工作区。
+ */
+function workspaceRootHint(ctx) {
+  return () => {
+    try {
+      const registry = typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined;
+      if (!registry || typeof registry.list !== 'function') return '';
+      const workspaces = registry.list();
+      if (!Array.isArray(workspaces)) return '';
+      for (const workspace of workspaces) {
+        const dir = workspace && typeof workspace.path === 'string' ? workspace.path : '';
+        if (dir && fs.existsSync(dir)) return dir;
+      }
+    } catch {
+      // 探不到就按「没有工作区」处理，不能让找目录失败把插件拦下来
+    }
+    return '';
+  };
+}
+
 export function apply(ctx, rawConfig) {
-  const config = resolveConfig(rawConfig);
+  const config = { ...resolveConfig(rawConfig), workspaceRoot: workspaceRootHint(ctx) };
 
   // 所有注册都挂在 ctx 上：插件卸载时自动回收工具注册。
   ctx.effect(() => {

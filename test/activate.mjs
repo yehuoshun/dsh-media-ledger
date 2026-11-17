@@ -78,12 +78,51 @@ const badAction = await tool.execute({ action: 'nope' });
 const badCount = await tool.execute({ action: 'add_metrics', id: 'p0001', play: '很多' });
 console.log('错误路径 →', [badId.error, badAction.error, badCount.error].map((text) => text.slice(0, 24)).join(' / '));
 
+// 工作区根接线：桌面版插件进程的 cwd 不是工作区，index.js 靠 ctx.get('workspaceRegistry') 拿根目录。
+// 这里喂一个假 registry，确认没显式配 dataDir 时，台账目录落在 <工作区根>/data/media-ledger。
+const wsRoot = path.join(os.tmpdir(), `ml-ws-${Date.now()}`);
+fs.mkdirSync(path.join(wsRoot, 'code', 'mock-proj'), { recursive: true });
+fs.writeFileSync(path.join(wsRoot, 'AGENTS.md'), '# mock workspace\n', 'utf8');
+const hintRoutes = [];
+const hintCtx = {
+  effect(fn) {
+    return fn();
+  },
+  logger: () => {},
+  get: (service) => (service === 'workspaceRegistry' ? { list: () => [{ path: wsRoot }] } : undefined),
+  tools: { register(spec) { return () => { spec.disposed = true; }; } },
+  inject(services, callback) {
+    if (!services.includes('webServer')) return;
+    callback({
+      get: (service) => (service === 'webServer'
+        ? { register(route) { hintRoutes.push(route); return () => {}; } }
+        : undefined),
+      effect: (fn) => fn(),
+    });
+  },
+};
+const savedHintEnv = process.env.DSH_MEDIA_LEDGER_DIR;
+delete process.env.DSH_MEDIA_LEDGER_DIR;
+apply(hintCtx, {});
+if (savedHintEnv !== undefined) process.env.DSH_MEDIA_LEDGER_DIR = savedHintEnv;
+const stateRoute = hintRoutes.find((route) => route.path === '/api/dsh-media-ledger/state');
+let stateBody = '';
+if (stateRoute) {
+  await stateRoute.handler({ method: 'GET' }, { writeHead() {}, end(body) { stateBody = body; } });
+}
+const hintedDir = stateBody ? JSON.parse(stateBody).dataDir : '';
+const expectedHinted = path.join(wsRoot, 'data', 'media-ledger');
+const hintOk = hintedDir === expectedHinted;
+console.log(`工作区根接线 → ${hintedDir || '（没拿到路由）'}${hintOk ? ' ✓' : ` ✗（应为 ${expectedHinted}）`}`);
+fs.rmSync(wsRoot, { recursive: true, force: true });
+
 const serialized = JSON.stringify(report) + JSON.stringify(pack);
 const ok = report.groups.length === 1
   && list.total === 1
   && badId.ok === false && badAction.ok === false && badCount.ok === false
   && !serialized.includes('undefined')
-  && bridgeCount === 2;
+  && bridgeCount === 2
+  && hintOk;
 
 for (const dispose of cleaned) dispose();
 const recycled = tool.disposed === true && bridgeRoutes.length === 0;

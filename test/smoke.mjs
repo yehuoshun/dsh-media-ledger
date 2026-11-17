@@ -238,6 +238,15 @@ if (workspaceRoot) {
 check('环境变量能改目录', envDir === path.join(dir, 'env-ledger'), envDir);
 check('配置优先于环境变量', resolveDataDir({ dataDir: path.join(dir, 'cfg-ledger') }) === path.join(dir, 'cfg-ledger'));
 
+// 宿主注入的工作区根提示（index.js 从 workspaceRegistry 取，惰性函数）：字符串与函数都认，函数抛错当没有
+const hintString = resolveDataDir({ workspaceRoot: path.join(dir, 'ws-hint') });
+check('工作区根提示（字符串）优先于 cwd 探测', hintString === path.join(dir, 'ws-hint', 'data', 'media-ledger'), hintString);
+const hintFn = resolveDataDir({ workspaceRoot: () => path.join(dir, 'ws-fn') });
+check('工作区根提示（函数）也能用', hintFn === path.join(dir, 'ws-fn', 'data', 'media-ledger'), hintFn);
+check('dataDir 仍然压过工作区根提示', resolveDataDir({ dataDir: path.join(dir, 'cfg-ledger'), workspaceRoot: () => path.join(dir, 'ws-fn') }) === path.join(dir, 'cfg-ledger'));
+const hintThrows = resolveDataDir({ workspaceRoot: () => { throw new Error('registry not ready'); } });
+check('工作区根提示抛错不炸插件', typeof hintThrows === 'string' && hintThrows.length > 0, hintThrows);
+
 // 工作区识别：只认「AGENTS.md + code|work」同层，插件仓库自己不会被误认（否则台账写回仓库里）
 const fakeRoot = path.join(dir, 'ws');
 fs.mkdirSync(path.join(fakeRoot, 'code', 'proj'), { recursive: true });
