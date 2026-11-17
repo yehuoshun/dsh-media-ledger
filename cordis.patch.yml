@@ -1,0 +1,4 @@
+- insert:
+    - id: media-ledger
+      name: dsh-media-ledger
+      config: {}
