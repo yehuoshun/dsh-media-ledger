@@ -14,6 +14,16 @@ import { apply, name, inject } from '../index.js';
 const dataDir = path.join(os.tmpdir(), `ml-activate-${Date.now()}`);
 const registered = [];
 const cleaned = [];
+const bridgeRoutes = [];
+const webServer = {
+  register(route) {
+    bridgeRoutes.push(route);
+    return () => {
+      const index = bridgeRoutes.indexOf(route);
+      if (index >= 0) bridgeRoutes.splice(index, 1);
+    };
+  },
+};
 const ctx = {
   effect(fn) {
     const dispose = fn();
@@ -27,6 +37,14 @@ const ctx = {
       return () => { spec.disposed = true; };
     },
   },
+  // 真 ctx 的 inject 会等 service 就绪再跑回调；这里只喂 webServer，够验桥的注册与回收。
+  inject(services, callback) {
+    if (!services.includes('webServer')) return;
+    callback({
+      get: (service) => (service === 'webServer' ? webServer : undefined),
+      effect: (fn) => ctx.effect(fn),
+    });
+  },
 };
 
 apply(ctx, { dataDir });
@@ -36,6 +54,8 @@ if (!tool) {
   process.exit(1);
 }
 console.log(`name=${name} inject=${JSON.stringify(inject)} 工具名=${tool.name} 参数键=${Object.keys(tool.parameters.properties).length} 个`);
+console.log(`桥路由 → ${bridgeRoutes.map((route) => route.path).join(', ')}`);
+const bridgeCount = bridgeRoutes.length;
 
 const add = await tool.execute({ action: 'add_post', platform: '抖音', account: '主号', kind: '图文tag', title: '五盾军团23人穿7号致敬C罗', published_at: '2026-11-14 20:00' });
 console.log('add_post →', JSON.stringify(add.added));
@@ -62,10 +82,11 @@ const serialized = JSON.stringify(report) + JSON.stringify(pack);
 const ok = report.groups.length === 1
   && list.total === 1
   && badId.ok === false && badAction.ok === false && badCount.ok === false
-  && !serialized.includes('undefined');
+  && !serialized.includes('undefined')
+  && bridgeCount === 2;
 
 for (const dispose of cleaned) dispose();
-const recycled = tool.disposed === true;
+const recycled = tool.disposed === true && bridgeRoutes.length === 0;
 fs.rmSync(dataDir, { recursive: true, force: true });
 
 console.log(ok && recycled ? '全过：注册 / 执行 / 渲染 / 错误路径 / 回收' : `失败：ok=${ok} recycled=${recycled}`);

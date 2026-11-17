@@ -8,6 +8,7 @@
  * @module dsh-media-ledger
  */
 
+import { makeBridgeRoutes } from './lib/bridge.js';
 import { resolveConfig } from './lib/config.js';
 import { registerTools } from './lib/tool.js';
 
@@ -35,5 +36,24 @@ export function apply(ctx, rawConfig) {
         }
       }
     };
+  });
+
+  // 左侧栏面板的数据桥（`/api/dsh-media-ledger/*`）：面板是浏览器里的 React 组件，
+  // 读不到磁盘、也读不到 Host 的 config，只能经这几条本机路由拿数据和写开关。
+  // webServer 在 headless profile 里不存在，所以走 ctx.inject 而不是写进 inject 数组。
+  ctx.inject(['webServer'], (sctx) => {
+    sctx.effect(() => {
+      const webServer = sctx.get('webServer');
+      const disposers = makeBridgeRoutes(sctx, config).map((route) => webServer.register(route));
+      return () => {
+        for (const dispose of disposers) {
+          try {
+            dispose();
+          } catch {
+            // 同上：回收失败不阻塞
+          }
+        }
+      };
+    }, 'media-ledger: panel bridge');
   });
 }

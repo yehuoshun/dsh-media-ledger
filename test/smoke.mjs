@@ -14,8 +14,11 @@ import { buildPack } from '../lib/pack.js';
 import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
+import { buildPanel } from '../lib/panel.js';
+import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
+const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let pass = 0;
 const fails = [];
 function check(name, ok, detail) {
@@ -116,9 +119,89 @@ check('重复 id 报错', dupError.includes('重复'), dupError);
 check('nextPostId 接最大号', nextPostId([{ id: 'p0009' }, { id: 'p0002' }]) === 'p0010');
 check('toLossless 清 undefined', JSON.stringify(toLossless({ a: undefined, b: 1, c: NaN, d: [undefined, 2] })) === '{"b":1,"c":null,"d":[null,2]}');
 
+// —— 面板数据：整形只搬运口径，不另算一套 ——
+const panelPosts = [
+  { id: 'p0001', platform: 'douyin', account: 'mock-main', kind: '图文tag', title: 'mock 旧作品', date: '2026-11-10', published_at: '2026-11-10 20:00' },
+  { id: 'p0002', platform: 'xhs', account: 'mock-main', kind: '视频', title: 'mock 新作品', date: '2026-11-14', published_at: '2026-11-14 20:00' },
+];
+const panelMetrics = [
+  { id: 'p0001', captured_at: '2026-11-11 10:00', play: 1000, like: 10, comment: 1, share: 1, collect: 1 },
+  { id: 'p0002', captured_at: '2026-11-15 08:00', play: 24000, like: 46, comment: 3, share: 2, collect: 5 },
+];
+const panelRows = buildRows(panelPosts, panelMetrics);
+const panel = buildPanel(panelRows, { groupBy: 'kind' });
+check('面板列表日期新的在前', panel.posts[0].id === 'p0002' && panel.posts[1].id === 'p0001', panel.posts.map((p) => p.id).join(','));
+check('面板行只留要显示的字段', Object.keys(panel.posts[0]).sort().join(',') === 'account,captured_at,collect,comment,date,hasData,id,kind,like,platform,play,share,tPlusHours,title');
+check('面板标出没报数的作品', panel.posts.every((post) => post.hasData === true) && buildPanel(buildRows([{ id: 'p0009', platform: 'bilibili' }], [])).posts[0].hasData === false);
+check('面板复盘与 buildReport 同口径', panel.report.interactionRate === buildReport(panelRows, { groupBy: 'kind' }).interactionRate && panel.report.total === 2, JSON.stringify(panel.report));
+check('面板行标题/类型有兜底', buildPanel([{ id: 'p0001', platform: 'douyin' }]).posts[0].kind === '未分类');
+
+// —— 侧栏开关：没写配置就当开，只有显式 false 才关 ——
+check('开关默认开', sidebarEnabled(undefined) === true && sidebarEnabled({}) === true && sidebarEnabled({ dataDir: 'X:/tmp-ledger' }) === true);
+check('显式 false 才关', sidebarEnabled({ sidebar: false }) === false && sidebarEnabled({ sidebar: true }) === true);
+
+// —— Host 桥：面板要的数据、开关要的写入口 ——
+const panelDir = path.join(dir, 'panel-ledger');
+fs.mkdirSync(panelDir, { recursive: true });
+fs.writeFileSync(path.join(panelDir, POSTS_FILE), panelPosts.map((post) => JSON.stringify(post)).join('\n') + '\n', 'utf8');
+fs.writeFileSync(path.join(panelDir, METRICS_FILE), panelMetrics.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8');
+const panelPayload = readPanel({ dataDir: panelDir });
+check('桥读出的台账目录是配置那个', panelPayload.dataDir === panelDir && panelPayload.ok === true, panelPayload.dataDir);
+check('桥的 payload 带复盘和列表', panelPayload.posts.length === 2 && panelPayload.report.total === 2 && panelPayload.sidebar === true);
+check('桥没有坏行时 errors 为空', Array.isArray(panelPayload.errors) && panelPayload.errors.length === 0);
+const routes = makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir });
+check('桥只开两条路由', routes.length === 2 && routes.every((route) => route.kind === 'exact' && route.path.startsWith(BRIDGE_PREFIX)), routes.map((r) => r.path).join(','));
+check('桥路由名对得上客户端', routes.map((route) => route.path).join(',') === `${BRIDGE_PREFIX}/state,${BRIDGE_PREFIX}/sidebar`);
+const fakeRes = () => {
+  const out = { statusCode: 0, headers: {}, body: '' };
+  out.setHeader = (key, value) => {
+    out.headers[key] = value;
+  };
+  out.end = (text) => {
+    out.body = text;
+  };
+  return out;
+};
+const stateRes = fakeRes();
+routes[0].handler({ method: 'GET' }, stateRes);
+const stateBody = JSON.parse(stateRes.body);
+check('GET state 返回 ok 与面板数据', stateRes.statusCode === 200 && stateBody.ok === true && stateBody.posts.length === 2, stateBody.error || '');
+const wrongMethodRes = fakeRes();
+routes[0].handler({ method: 'POST' }, wrongMethodRes);
+check('GET state 拒绝别的 method', wrongMethodRes.statusCode === 405, String(wrongMethodRes.statusCode));
+const badValueRes = fakeRes();
+await routes[1].handler(
+  { method: 'POST', on: (event, handler) => { if (event === 'end') handler(); } },
+  badValueRes,
+);
+check('POST sidebar 拒绝空请求体', badValueRes.statusCode === 400 && JSON.parse(badValueRes.body).code === 'bad-request', badValueRes.body);
+const noEditorRes = fakeRes();
+await routes[1].handler(
+  {
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler('{"value":false}');
+      if (event === 'end') handler();
+    },
+  },
+  noEditorRes,
+);
+check('没有 configEditor 时说清保存不了', noEditorRes.statusCode === 200 && JSON.parse(noEditorRes.body).code === 'no-config-editor', noEditorRes.body);
+
+// —— 侧栏面板的客户端 bundle：DSH 的 module loader 契约 ——
+const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+const clientText = fs.readFileSync(path.join(pkgRoot, 'lib/client.js'), 'utf8');
+check('package.json 声明了 web 客户端', pkgJson.dsh && pkgJson.dsh.client && pkgJson.dsh.client.platform === 'web', JSON.stringify(pkgJson.dsh && pkgJson.dsh.client));
+check('exports["./client"] 指向存在的文件', pkgJson.exports['./client'] === './lib/client.js' && fs.existsSync(path.join(pkgRoot, pkgJson.exports['./client'])));
+check('客户端用 ModuleLoader 注册且 id 等于包名', clientText.includes('window.__ModuleLoader__.load(') && clientText.includes(`id: '${pkgJson.name}'`), pkgJson.name);
+check('React 只从 require("react") 来', /require\('react'\)/.test(clientText));
+check('不 require 任何 dsh-client-* 包', !/require\(\s*['"]@deepseek-ai\/dsh-client-/.test(clientText));
+check('侧栏 id 与主区域 key 是同一个常量', /const PANEL_ID = 'dsh-media-ledger'/.test(clientText) && clientText.includes('id: PANEL_ID') && clientText.includes('key: PANEL_ID'));
+check('客户端只连本机桥，没有外网地址', !/https?:\/\//.test(clientText) && clientText.includes("const BRIDGE = 'api/dsh-media-ledger'"));
+check('客户端不碰文件系统', !/require\('node:/.test(clientText) && !/from 'node:/.test(clientText));
+
 // —— 隐私：不外传、不落仓库 ——
-const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js'];
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js'];
 const forbidden = [
   /\bfetch\s*\(/,
   /new\s+WebSocket/,
