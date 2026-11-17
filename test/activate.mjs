@@ -116,13 +116,32 @@ const hintOk = hintedDir === expectedHinted;
 console.log(`工作区根接线 → ${hintedDir || '（没拿到路由）'}${hintOk ? ' ✓' : ` ✗（应为 ${expectedHinted}）`}`);
 fs.rmSync(wsRoot, { recursive: true, force: true });
 
+// 面板 payload 的形状：左导航要的 facets 与两级切片复盘都得在（此时台账里有 1 条 douyin/主号）
+const panelRoute = bridgeRoutes.find((route) => route.path === '/api/dsh-media-ledger/state');
+let panelBody = '';
+if (panelRoute) {
+  await panelRoute.handler({ method: 'GET' }, { writeHead() {}, end(body) { panelBody = body; } });
+}
+const panelPayload = panelBody ? JSON.parse(panelBody) : {};
+const shapeOk = Boolean(panelPayload.facets)
+  && panelPayload.facets.total === 1
+  && panelPayload.facets.platforms.length === 1
+  && panelPayload.facets.platforms[0].key === 'douyin'
+  && panelPayload.facets.platforms[0].accounts[0].key === '主号'
+  && panelPayload.reports['platform:douyin'].groupBy === 'account'
+  && panelPayload.reports['account:douyin|主号'].groupBy === 'kind'
+  && panelPayload.postsTotal === 1
+  && panelPayload.truncated === false;
+console.log(`面板切片 → ${shapeOk ? 'facets + 两级切片 ✓' : JSON.stringify(panelPayload.facets || panelPayload)}`);
+
 const serialized = JSON.stringify(report) + JSON.stringify(pack);
 const ok = report.groups.length === 1
   && list.total === 1
   && badId.ok === false && badAction.ok === false && badCount.ok === false
   && !serialized.includes('undefined')
   && bridgeCount === 2
-  && hintOk;
+  && hintOk
+  && shapeOk;
 
 for (const dispose of cleaned) dispose();
 const recycled = tool.disposed === true && bridgeRoutes.length === 0;
