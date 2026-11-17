@@ -201,11 +201,11 @@ AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私�
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 104/104
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 106/106
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
-`smoke.mjs` 守的是口径（时间解析、最新快照、互动率同批、BOM、坏行行号、重复 id）和面板契约（列表整形、开关默认开、两条路由的方法与请求体、客户端 bundle 的 ModuleLoader / id / React 来源），
+`smoke.mjs` 守的是口径（时间解析、最新快照、互动率同批、BOM、坏行行号、重复 id）和面板契约（列表整形、开关默认开、两条路由的方法与请求体、客户端 bundle 的 ModuleLoader / id / React 来源、bundle 真跑一遍能否注册出侧栏图标与主面板），
 `activate.mjs` 守的是接口（工具名、参数表、`execute` 返回无损 JSON、卸载能否回收）。
 
 ## 状态

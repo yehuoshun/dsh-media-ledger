@@ -60,7 +60,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 104/104**（含面板整形与筛选树、桥路由、客户端 bundle 契约、B站 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
+- 期望：`smoke.mjs` → **全过 106/106**（含面板整形与筛选树、桥路由、客户端 bundle 契约与「真跑一遍 bundle」、B站 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 
