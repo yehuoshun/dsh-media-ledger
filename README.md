@@ -37,7 +37,7 @@
     - id: media-ledger
       name: dsh-media-ledger
       config:
-        dataDir: E:\DevSoftWare\DeepSeekWorkSpace\code\football-copy-check\data
+        dataDir: D:\media-ledger-data   # 自己挑个位置，放笔记/项目目录里都行
 ```
 
 配置项（都可省）：
@@ -132,7 +132,7 @@ docs/DETAIL.md     设计取舍与后续
 
 ```powershell
 $env:ELECTRON_RUN_AS_NODE = "1"
-$node = "E:\DevSoftWare\DeepSeek\DeepSeek Harness.exe"
+$node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
 & $node "test\smoke.mjs"      # 纯函数冒烟，全过 36/36
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收

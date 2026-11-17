@@ -4,7 +4,7 @@
  *
  * 用法：
  *   $env:ELECTRON_RUN_AS_NODE = "1"
- *   & "E:\DevSoftWare\DeepSeek\DeepSeek Harness.exe" "test\activate.mjs"
+ *   & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
  */
 import fs from 'node:fs';
 import os from 'node:os';

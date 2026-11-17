@@ -3,7 +3,7 @@
  *
  * 用法（不需要装 Node，借宿主的 Electron 当 Node 用）：
  *   $env:ELECTRON_RUN_AS_NODE = "1"
- *   & "E:\DevSoftWare\DeepSeek\DeepSeek Harness.exe" "test\smoke.mjs"
+ *   & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\smoke.mjs"
  */
 import fs from 'node:fs';
 import os from 'node:os';
