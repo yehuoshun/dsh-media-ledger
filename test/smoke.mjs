@@ -16,6 +16,7 @@ import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 import { buildPanel, parseSlice, POST_LIMIT } from '../lib/panel.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
+import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport } from '../lib/xiaohongshu.js';
 import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
@@ -191,6 +192,55 @@ check('按 bvid 匹配已有作品（url 兜底）', matchPost(mockPosts, 'BVmoc
 check('按 platform_id 优先匹配', matchPost(mockPosts, 'BVmock000002').id === 'p0002');
 check('匹配不到返回 null', matchPost(mockPosts, 'BVmock999999') === null);
 
+// —— 小红书导入：观看量不是曝光量、图文视频分开、缺值不写 0 ——
+const mockXhsImport = {
+  platform: 'xhs',
+  account: { name: 'mock-xhs' },
+  generated_at: '2026-11-18 01:20',
+  notes: [
+    {
+      note_id: 'mocknote0001',
+      title: 'mock 图文笔记',
+      kind: '图文',
+      published_at: '2026-11-10 12:00',
+      metrics: { play: 1200, like: 34, collect: 12, comment: 5, share: 2, fans: 3 },
+      extras: { impressions: 8000, cover_click_rate: 31.2 },
+    },
+    { note_id: 'mocknote0002', title: 'mock 视频笔记', kind: '视频', metrics: { play: 0, like: 0 }, extras: { impressions: 3 } },
+    { note_id: 'mocknote0003', title: 'mock 曝光比观看小', metrics: { play: 900 }, extras: { impressions: 100 } },
+    { note_id: 'mocknote0004', title: 'mock 负数观看', metrics: { play: -5, like: 1 }, extras: { cover_click_rate: 320 } },
+    { note_id: 'mocknote0005', title: 'mock 一个数都没有', metrics: {} },
+    { title: 'mock 没 note_id 的脏数据' },
+  ],
+  warnings: ['上游提醒：某接口返回 null'],
+};
+const mockXhs = normalizeXhsImport(mockXhsImport);
+check('小红书导入按 note_id 过滤脏数据', mockXhs.rows.length === 4, String(mockXhs.rows.length));
+check('小红书导入带出账号名', mockXhs.account === 'mock-xhs');
+const xhsFirst = mockXhs.rows[0];
+check('小红书观看量进 play、涨粉进 fans', xhsFirst.metric.play === 1200 && xhsFirst.metric.fans === 3, JSON.stringify(xhsFirst.metric));
+check('小红书曝光量只进 extras', xhsFirst.metric.extras.impressions === 8000 && xhsFirst.metric.extras.cover_click_rate === 31.2, JSON.stringify(xhsFirst.metric.extras));
+check('小红书快照标出来源', xhsFirst.metric.source === '小红书创作中心' && xhsFirst.metric.captured_at === '2026-11-18 01:20');
+check('小红书作品记录平台/类型/时间/链接兜底', xhsFirst.post.platform === 'xhs' && xhsFirst.post.kind === '图文'
+  && xhsFirst.post.platform_id === 'mocknote0001' && xhsFirst.post.date === '2026-11-10'
+  && xhsFirst.post.url === 'https://www.xiaohongshu.com/explore/mocknote0001', JSON.stringify(xhsFirst.post));
+const xhsVideo = mockXhs.rows[1];
+check('小红书视频与图文分开记 kind', xhsVideo.post.kind === '视频' && kindOf({ kind: 'video' }) === '视频' && kindOf({}) === '图文', xhsVideo.post.kind);
+check('小红书给了 0 就照实记 0', xhsVideo.metric.play === 0 && xhsVideo.metric.like === 0, JSON.stringify(xhsVideo.metric));
+check('曝光量比观看量小要告警', mockXhs.warnings.some((line) => line.includes('mocknote0003') && line.includes('曝光量')), JSON.stringify(mockXhs.warnings));
+check('负数观看量当缺值并告警', !('play' in mockXhs.rows[3].metric) && mockXhs.warnings.some((line) => line.includes('mocknote0004') && line.includes('负数')), JSON.stringify(mockXhs.rows[3].metric));
+check('封面点击率超 100 要告警', mockXhs.warnings.some((line) => line.includes('封面点击率')), JSON.stringify(mockXhs.warnings));
+check('小红书上游 warnings 透传', mockXhs.warnings.some((line) => line.includes('上游提醒')));
+check('小红书一个数字都没有的不落盘', mockXhs.warnings.some((line) => line.includes('一个数字都没抓到')));
+check('小红书空导入不抛异常', normalizeXhsImport(null).rows.length === 0 && normalizeXhsImport({}).warnings.length > 0);
+const xhsPosts = [
+  { id: 'p0001', platform: 'xhs', url: 'https://www.xiaohongshu.com/explore/mocknote0001' },
+  { id: 'p0002', platform: 'xhs', platform_id: 'mocknote0002', url: 'https://example.invalid/elsewhere' },
+];
+check('小红书按 note_id 匹配已有作品（url 兜底）', matchXhsPost(xhsPosts, 'mocknote0001').id === 'p0001');
+check('小红书按 platform_id 优先匹配', matchXhsPost(xhsPosts, 'mocknote0002').id === 'p0002');
+check('小红书匹配不到返回 null', matchXhsPost(xhsPosts, 'mocknote9999') === null);
+
 // —— 面板数据：整形只搬运口径，不另算一套 ——
 const panelPosts = [
   { id: 'p0001', platform: 'douyin', account: 'mock-main', kind: '图文tag', title: 'mock 旧作品', date: '2026-11-10', published_at: '2026-11-10 20:00' },
@@ -280,7 +330,7 @@ check('客户端只连本机桥，没有外网地址', !/https?:\/\//.test(clien
 check('客户端不碰文件系统', !/require\('node:/.test(clientText) && !/from 'node:/.test(clientText));
 
 // —— 隐私：不外传、不落仓库 ——
-const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js'];
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js', 'lib/xiaohongshu.js'];
 const forbidden = [
   /\bfetch\s*\(/,
   /new\s+WebSocket/,
