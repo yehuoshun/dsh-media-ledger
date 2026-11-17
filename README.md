@@ -45,8 +45,24 @@
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `dataDir` | 工作区根下的 `data/media-ledger`（查找顺序：`config.dataDir` → 环境变量 `DSH_MEDIA_LEDGER_DIR` → 该默认值 → 找不到工作区时退回 `~/media-ledger`） | 台账目录，放哪由你定，不塞进 DSH 自己的存储 |
+| `sidebar` | `true` | 是否在 DSH 左侧栏显示「自媒体台账」入口；只有显式写 `false` 才隐藏，面板里的开关写的就是这一项 |
 | `titleLimits` | 见 `lib/pack.js` | 按平台覆盖标题字数上限 |
 | `coverSpecs` | 见 `lib/pack.js` | 按平台覆盖封面建议尺寸 |
+
+## 左侧栏面板
+
+装好插件、重载 DSH 之后，左侧栏会多一个柱状图图标「自媒体台账」，点开是主区一整页：
+
+- 顶部四张卡：作品数、已报数条数、整体互动率、T+ 龄期范围；
+- 中间一张分组复盘表（分组 / 条数 / 播放中位数 / 点赞中位数 / 互动率 / 评论赞比），分组维度和 `report` 的 `group_by` 一致；
+- 下面是台账列表（日期 / 平台 / 类型 / 标题 / 播放 / 赞 / 评 / 转 / 藏 / T+），没报数的行写「未报数」而不是 0；
+- 页脚写出台账目录与坏行条数，数据到底落在哪一眼能看到。
+
+右上角有「在左侧栏显示」开关和刷新按钮。关掉开关会立刻摘掉侧栏图标，并通过 DSH 的 `configEditor` 把 `sidebar: false` 写回插件配置（只动这一行的 `config`，不碰 `cordis.patch.yml` 里别的行），重启后依然生效；图标藏起来之后，还能在命令面板里跑「自媒体台账」把它叫回来，所以没有「关掉就再也打不开」的死角。
+
+数据怎么到页面上：面板是浏览器里的 React 组件，读不到磁盘也读不到 Host 的 `config`，所以 Host 侧开两条**只走本机回环**的路由——`GET /api/dsh-media-ledger/state`（台账 + 复盘 + 开关状态）、`POST /api/dsh-media-ledger/sidebar`（写开关）。它们不访问外网、不收任意参数，请求体只认 `{"value": true|false}`，台账内容不出本机。数字全部来自 `media` 工具那套口径（最新快照、同批互动率、现算 T+），面板只换个地方显示，不另算一套。
+
+改完代码怎么生效：改 Host 侧（`index.js`、`lib/bridge.js` 等）要重装插件并重启 DSH；只改 `lib/client.js` 刷一下页面即可。从旧版本升上来要走一次 `remove_bundle` + `install_bundle`，否则跑的还是旧代码。
 
 ## 用一个工具干活
 
@@ -129,6 +145,9 @@ lib/store.js       JSONL 读写（BOM 容错、坏行报行号、重复 id 报�
 lib/metrics.js     时间解析、最新快照、中位数、互动率、分组报告
 lib/pack.js        发布包文本 + 标题/话题/封面的机械校验
 lib/tool.js        唯一工具 media（action 分派）
+lib/panel.js       面板数据整形（只搬运 metrics 的口径，不另算指标）
+lib/bridge.js      Host 侧面板桥：/api/dsh-media-ledger/state 与 /sidebar
+lib/client.js      浏览器侧 bundle：侧栏图标「自媒体台账」+ 面板页 + 命令面板入口
 locale/zh.json     面板标题与说明
 locale/en.json     英文标题与说明
 docs/DETAIL.md     插件详情页（恰好一行图片，英文）
@@ -148,15 +167,15 @@ AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私�
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 详情页校验，全过 41/41
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 70/70
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
-`smoke.mjs` 守的是口径（时间解析、最新快照、互动率同批、BOM、坏行行号、重复 id），
+`smoke.mjs` 守的是口径（时间解析、最新快照、互动率同批、BOM、坏行行号、重复 id）和面板契约（列表整形、开关默认开、两条路由的方法与请求体、客户端 bundle 的 ModuleLoader / id / React 来源），
 `activate.mjs` 守的是接口（工具名、参数表、`execute` 返回无损 JSON、卸载能否回收）。
 
 ## 状态
 
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
-- **面板（Client 槽位）未做**：先按 `docs/DESIGN.md` 里的计划，等工具用顺了再加，避免先做一堆没人点的按钮。
+- 左侧栏面板已做（0.2.0）：一页台账 + 复盘摘要，页内「在左侧栏显示」开关写回 `sidebar` 配置。数据走两条本机路由，不联网。
 - npm 包名待定（`dsh-media-ledger` 这个名字在 npm 上可用，但暂不发布）。

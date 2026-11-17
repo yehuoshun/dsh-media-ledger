@@ -20,7 +20,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | 多账号矩阵、团队协作、权限 | 用户自述「我最多两账号，都是个人号」 |
 | 独立 Web 应用 / 仓库内 CLI | 用户已明确否掉这两种形态，选了 DSH 插件 |
 
-**面板 / GUI 目前不存在。** 要做先问用户，别自己开工——这是本项目已经被纠正过两次的地方（用户原话：「回滚，你都没问我」「我问你的是dsh插件，你在做什么？」）。
+**面板已经存在**（2026-11-18，用户点名要左侧栏入口 + 开关）：左侧栏图标「自媒体台账」→ 主区一页台账列表 + 复盘摘要，页内一个「在左侧栏显示」开关。**不要自己扩成独立页面体系**：不加路由、不加第二个面板、不做图表库；要加内容先问用户——这是本项目被纠正过两次的地方（用户原话：「回滚，你都没问我」「我问你的是dsh插件，你在做什么？」）。
 
 ---
 
@@ -34,6 +34,9 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | `lib/metrics.js` | 时间解析、快照取最新、中位数、`buildRows`、互动率、`buildReport` |
 | `lib/pack.js` | 发布包：标题字数、标签归一截断、封面比例校验 |
 | `lib/tool.js` | 工具定义：参数 schema、action 分发、错误收敛成 `{ ok:false, error }` |
+| `lib/panel.js` | 面板数据整形：`toPanelPost` / `buildPanel`（只搬运 `buildReport` 的口径，**不另算一套指标**） |
+| `lib/bridge.js` | Host 侧面板桥：`GET /api/dsh-media-ledger/state`（面板数据）、`POST .../sidebar`（写开关）；`sidebarEnabled` / `readPanel` / `saveSidebar` |
+| `lib/client.js` | 浏览器侧 bundle：`window.__ModuleLoader__.load({ id: 'dsh-media-ledger', factory })`，注册 `sidebar.panellist`（图标「自媒体台账」）+ `main`（面板页）+ 命令 `media-ledger-sidebar` |
 | `lib/util.js` | `parseCount`（`2.4w` / `1.2万`）、`toLossless` |
 | `locale/{zh,en}.json` | 插件元数据（`meta.description` / `meta.detail` 等） |
 | `docs/DETAIL.md`、`docs/DETAIL.zh.md` | 插件详情页正文，**各自恰好一行图片**（见 §4） |
@@ -54,7 +57,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 46/46**；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、25 个参数键、卸载后工具回收。
+- 期望：`smoke.mjs` → **全过 70/70**（含面板整形、桥路由、客户端 bundle 契约）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、25 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 
@@ -103,7 +106,8 @@ plugin_manager install_bundle(target="<本仓库目录>")
 
 ## 6. 代码约定
 
-- `lib/` 只放**纯函数**：不做 IO、不读环境、不联网，方便在 `smoke.mjs` 里直接测。IO 只在 `store.js` 与 `tool.js` 里。
+- `lib/` 只放**纯函数**：不做 IO、不读环境、不联网，方便在 `smoke.mjs` 里直接测。例外只有三个，别扩大到别的文件：`store.js`（读写 JSONL）、`tool.js`（工具 IO 收敛）、`bridge.js`（Host 侧那两条本机路由的读写）；`client.js` 是浏览器 bundle，跑在页面里，不参与 Node 侧纯函数规则。
+- `lib/bridge.js` 的路由**只部署在宿主自己的 webServer 上**，不 import `node:http`、不向外发请求；面板要的数据只能从这两条路由出，不要为了少写一个字段去开第三条。`POST /sidebar` 的请求体只认 `{"value": true|false}`，别把入参反射成路径或文件名。
 - 工具错误统一 `return { ok: false, error: '…' }`，**不要 throw**（throw 会让整个工具调用失败，用户看不到可读原因）。
 - 工具参数 `additionalProperties: false`、`required: ['action']`、action 用枚举。新增 action 要一次改齐四处：`lib/tool.js` 的枚举与分发、参数键、`locale/{zh,en}.json` 的描述、`test/smoke.mjs` 或 `test/activate.mjs` 的断言。
 - 数字口径不要随手改，改了必须在提交信息里写清为什么，并同步改断言：互动率**分子分母取同一批行**且只算 `play > 0`；快照取 `captured_at` 真正最新的那条（不是文件里最后一行）；T+ 龄期现算而不是信上报值。
