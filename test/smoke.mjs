@@ -15,6 +15,7 @@ import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 import { buildPanel } from '../lib/panel.js';
+import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
@@ -119,6 +120,77 @@ check('重复 id 报错', dupError.includes('重复'), dupError);
 check('nextPostId 接最大号', nextPostId([{ id: 'p0009' }, { id: 'p0002' }]) === 'p0010');
 check('toLossless 清 undefined', JSON.stringify(toLossless({ a: undefined, b: 1, c: NaN, d: [undefined, 2] })) === '{"b":1,"c":null,"d":[null,2]}');
 
+// —— B站导入：实时口径优先、缺值不写 0、结算值进 extras ——
+check('万分比换百分比', progressPercent(4122) === 41.22 && progressPercent(null) === null, String(progressPercent(4122)));
+const mockLocal = tsToLocal(1794560515);
+check('时间戳转本地时间', /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(mockLocal) && parseTs(mockLocal) !== null, mockLocal);
+check('时间戳 0 不猜', tsToLocal(0) === '');
+
+const mockImport = {
+  generated_at: '2026-11-18 00:40',
+  account: { mid: 10001, name: 'mock-main', level: 6 },
+  posts: [
+    {
+      bvid: 'BVmock000001',
+      title: 'mock 有实时口径的稿子',
+      pubdate: 1794560515,
+      duration: 48,
+      realtime: { play: 32, like: 1, comment: 1, share: 0, collect: 1 },
+      settled: { play: 28, view: 25, like: 2, fav: 1, reply: 1, share: 0, coin: 0, dm: 0, fans_play: 3, guest_play: 25, progress_rate: 4122, avg_duration: 19 },
+      diagnose: {
+        gender: { male: 8, female: 0 },
+        age: { age_one: 1, age_two: 7, age_three: 5, age_four: 2 },
+        area: null,
+        tags: [{ name: 'mock标签', count: 2105 }],
+        play_proportion: { new_mobile: 24, new_pc: 4 },
+        audience: { fans: 3, guest: 25 },
+      },
+    },
+    {
+      bvid: 'BVmock000002',
+      title: 'mock 只有结算口径的稿子',
+      pubdate: 1794560515,
+      settled: { play: 7, view: 6, like: 1, fav: 0, reply: 0, share: 0 },
+      diagnose: { area: [{ location: 'mock省', count: 2 }] },
+    },
+    { bvid: '', title: 'mock 没 bvid 的脏数据' },
+    { bvid: 'BVmock000003', title: 'mock 一个数都没有' },
+  ],
+  warnings: ['上游提醒：某接口返回 null'],
+};
+const mockNormalized = normalizeImport(mockImport);
+check('导入按 bvid 过滤脏数据', mockNormalized.rows.length === 2, String(mockNormalized.rows.length));
+check('导入带出账号名', mockNormalized.account === 'mock-main');
+const mockFirst = mockNormalized.rows[0];
+check('快照取实时口径而不是结算值', mockFirst.metric.play === 32, String(mockFirst.metric.play));
+check('结算值进 extras 不进 play', mockFirst.metric.extras.settled.play_settled === 28 && mockFirst.metric.extras.settled.view_dedup === 25);
+check('万分比换成本地百分比', mockFirst.metric.extras.settled.progress_pct === 41.22, String(mockFirst.metric.extras.settled.progress_pct));
+check('area 为 null 不崩', mockFirst.metric.extras.diagnose.area === undefined);
+const mockSecond = mockNormalized.rows[1].metric;
+check('缺值不写 0（没给的字段不出现）', !('elec' in mockSecond.extras.settled) && !('progress_pct' in mockSecond.extras.settled), JSON.stringify(mockSecond.extras));
+check('B站给了 0 就照实记 0', mockSecond.collect === 0 && mockSecond.comment === 0, JSON.stringify(mockSecond));
+check('缺实时口径要告警', mockNormalized.warnings.some((line) => line.includes('BVmock000002') && line.includes('结算值')), JSON.stringify(mockNormalized.warnings));
+check('上游 warnings 透传', mockNormalized.warnings.some((line) => line.includes('上游提醒')));
+check('作品记录带 platform_id 与 bilibili 平台', mockFirst.post.platform_id === 'BVmock000001' && mockFirst.post.platform === 'bilibili');
+check('空导入不抛异常', normalizeImport(null).rows.length === 0 && normalizeImport({}).warnings.length > 0);
+
+// 采集脚本产出的是格式化好的时间字符串（不是 pubdate 时间戳），两种都要吃得下
+const mockPreformatted = normalizeImport({
+  generated_at: '2026-11-18 00:40',
+  account: { name: 'mock-main' },
+  posts: [{ bvid: 'BVmock000004', title: 'mock 采集脚本格式', published_at: '2026-11-13 17:01', date: '2026-11-13', realtime: { play: 5 } }],
+}).rows[0].post;
+check('采集脚本格式的时间直接用', mockPreformatted.published_at === '2026-11-13 17:01' && mockPreformatted.date === '2026-11-13', JSON.stringify([mockPreformatted.published_at, mockPreformatted.date]));
+check('时间戳也能换成同一格式', mockFirst.post.published_at === tsToLocal(1794560515) && mockFirst.post.date === tsToLocal(1794560515).slice(0, 10), mockFirst.post.published_at);
+
+const mockPosts = [
+  { id: 'p0001', platform: 'bilibili', url: 'https://www.bilibili.com/video/BVmock000001' },
+  { id: 'p0002', platform: 'bilibili', platform_id: 'BVmock000002', url: 'https://example.invalid/elsewhere' },
+];
+check('按 bvid 匹配已有作品（url 兜底）', matchPost(mockPosts, 'BVmock000001').id === 'p0001');
+check('按 platform_id 优先匹配', matchPost(mockPosts, 'BVmock000002').id === 'p0002');
+check('匹配不到返回 null', matchPost(mockPosts, 'BVmock999999') === null);
+
 // —— 面板数据：整形只搬运口径，不另算一套 ——
 const panelPosts = [
   { id: 'p0001', platform: 'douyin', account: 'mock-main', kind: '图文tag', title: 'mock 旧作品', date: '2026-11-10', published_at: '2026-11-10 20:00' },
@@ -201,7 +273,7 @@ check('客户端只连本机桥，没有外网地址', !/https?:\/\//.test(clien
 check('客户端不碰文件系统', !/require\('node:/.test(clientText) && !/from 'node:/.test(clientText));
 
 // —— 隐私：不外传、不落仓库 ——
-const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js'];
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js'];
 const forbidden = [
   /\bfetch\s*\(/,
   /new\s+WebSocket/,
