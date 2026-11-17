@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import { buildRows, buildReport, parseTs, latestSnapshots, median, interaction } from '../lib/metrics.js';
 import { buildPack } from '../lib/pack.js';
 import { parseCount, toLossless } from '../lib/util.js';
@@ -278,6 +279,61 @@ check('不 require 任何 dsh-client-* 包', !/require\(\s*['"]@deepseek-ai\/dsh
 check('侧栏 id 与主区域 key 是同一个常量', /const PANEL_ID = 'dsh-media-ledger'/.test(clientText) && clientText.includes('id: PANEL_ID') && clientText.includes('key: PANEL_ID'));
 check('客户端只连本机桥，没有外网地址', !/https?:\/\//.test(clientText) && clientText.includes("const BRIDGE = 'api/dsh-media-ledger'"));
 check('客户端不碰文件系统', !/require\('node:/.test(clientText) && !/from 'node:/.test(clientText));
+
+// 光看源码文本不够：语法错或 apply 里写错，页面上是白屏，文本断言一条都不会响。
+// 这里用 vm 把 bundle 真跑一遍（stub 掉 window / document / React），确认它能 load 并注册出两个入口。
+let bundleOptions = null;
+const bundleSandbox = {
+  window: { __ModuleLoader__: { load: (options) => { bundleOptions = options; } } },
+  document: { baseURI: 'http://127.0.0.1/' },
+  URL,
+  fetch: () => Promise.reject(new Error('注册阶段不该联网')),
+  console,
+};
+bundleSandbox.globalThis = bundleSandbox;
+vm.createContext(bundleSandbox);
+vm.runInContext(clientText, bundleSandbox, { filename: 'lib/client.js' });
+const bundleReact = {
+  createElement: (type, props, ...children) => ({ type, props, children }),
+  Fragment: 'Fragment',
+  useState: (initial) => [initial, () => {}],
+  useEffect: () => {},
+  useCallback: (fn) => fn,
+};
+const bundleSlots = [];
+let bundleExport = null;
+try {
+  bundleExport = bundleOptions
+    ? bundleOptions.factory((name) => {
+        if (name === 'react') return bundleReact;
+        throw new Error(`客户端 require 了不该有的模块：${name}`);
+      })
+    : null;
+  if (bundleExport) {
+    bundleExport.apply({
+      slots: {
+        inject: (ownerKey, body) => body(),
+        register: (options, component) => {
+          bundleSlots.push({ name: options.name, id: options.id, key: options.key, component: typeof component });
+          return () => {};
+        },
+      },
+      inject: (services, body) => body({ get: () => ({ register: () => () => {} }), effect: (fn) => fn() }),
+    });
+  }
+} catch (error) {
+  check('客户端 bundle 能在页面环境里跑起来', false, String((error && error.message) || error));
+}
+const bundleSidebar = bundleSlots.find((item) => item.name === 'sidebar.panellist');
+const bundleMain = bundleSlots.find((item) => item.name === 'main');
+check('客户端 bundle 能在页面环境里跑起来', Boolean(bundleOptions) && bundleOptions.id === 'dsh-media-ledger', bundleOptions && bundleOptions.id);
+check(
+  '侧栏图标与主面板都注册上了，id 与 key 一致',
+  Boolean(bundleSidebar) && Boolean(bundleMain)
+    && bundleSidebar.component === 'function' && bundleMain.component === 'function'
+    && bundleSidebar.id === bundleMain.key,
+  JSON.stringify(bundleSlots),
+);
 
 // —— 隐私：不外传、不落仓库 ——
 const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js'];
