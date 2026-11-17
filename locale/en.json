@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Media Ledger",
-    "description": "Post ledger, data review and publish packs for Douyin / Xiaohongshu / Bilibili / WeChat Channels. No upload automation.",
-    "detail": "Records posts and every metric snapshot, reviews with medians, same-snapshot engagement and T+ age comparison, and checks title length, tags and cover size for publish packs."
+    "description": "Post ledger, data review and publish packs for Douyin / Xiaohongshu / Bilibili / WeChat Channels. No upload automation and no network: the ledger is written only to the directory you configure.",
+    "detail": "docs/DETAIL.md"
   }
 }

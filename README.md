@@ -100,6 +100,13 @@ media(action: "report", group_by: "kind")
 2. **用中位数不用均值**：一条爆款就能把均值拉到没有参考价值；
 3. **互动率只在「同一条快照里同时有播放和互动」的行上算**，分子分母同批，否则会算出 10050%；混龄期的数不可比，用 `max_age_hours` 取同一批。
 
+## 隐私：数据不出本机
+
+- **不联网**：插件代码里没有 `fetch` / `http` / `https` / `net` / `child_process`，没有任何出网路径，也没有第三方依赖（`dependencies` 为空）。`test/smoke.mjs` 里有一条断言守着这个事实，谁哪天加了出网代码，测试会先挂。
+- **不写进仓库**：台账默认在 `~/media-ledger`（仓库外）。`.gitignore` 已挡住 `data/` 与 `*.jsonl`，即使把 `dataDir` 指进仓库也不会被提交。
+- **不含示例数据**：仓库里没有任何真实作品、账号 ID、播放量，只有代码、文档和自测用的假数据（`test/` 里，一眼可辨是 mock）。
+- **不碰宿主的存储**：数据目录由你配置，插件不往 DSH 自己的 profile 或数据库里塞东西。
+
 ## 同类开源对照
 
 调研时间 2026-11-17（star 数为 API 实测）：
@@ -123,7 +130,11 @@ lib/metrics.js     时间解析、最新快照、中位数、互动率、分组�
 lib/pack.js        发布包文本 + 标题/话题/封面的机械校验
 lib/tool.js        唯一工具 media（action 分派）
 locale/zh.json     面板标题与说明
-docs/DETAIL.md     设计取舍与后续
+locale/en.json     英文标题与说明
+docs/DETAIL.md     插件详情页（恰好一行图片，英文）
+docs/DETAIL.zh.md  插件详情页（中文）
+docs/preview.svg   详情页示意图
+docs/DESIGN.md     设计取舍与后续
 ```
 
 ## 自证
@@ -134,7 +145,7 @@ docs/DETAIL.md     设计取舍与后续
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟，全过 36/36
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 详情页校验，全过 41/41
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
@@ -144,5 +155,5 @@ $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自�
 ## 状态
 
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
-- **面板（Client 槽位）未做**：先按 `docs/DETAIL.md` 里的计划，等工具用顺了再加，避免先做一堆没人点的按钮。
+- **面板（Client 槽位）未做**：先按 `docs/DESIGN.md` 里的计划，等工具用顺了再加，避免先做一堆没人点的按钮。
 - npm 包名待定（`dsh-media-ledger` 这个名字在 npm 上可用，但暂不发布）。

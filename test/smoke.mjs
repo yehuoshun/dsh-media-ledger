@@ -8,11 +8,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildRows, buildReport, parseTs, latestSnapshots, median, interaction } from '../lib/metrics.js';
 import { buildPack } from '../lib/pack.js';
 import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
-import { appendJsonl, loadLedger, nextPostId, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
+import { appendJsonl, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
 let pass = 0;
@@ -114,6 +115,60 @@ check('重复 id 报错', dupError.includes('重复'), dupError);
 
 check('nextPostId 接最大号', nextPostId([{ id: 'p0009' }, { id: 'p0002' }]) === 'p0010');
 check('toLossless 清 undefined', JSON.stringify(toLossless({ a: undefined, b: 1, c: NaN, d: [undefined, 2] })) === '{"b":1,"c":null,"d":[null,2]}');
+
+// —— 隐私：不外传、不落仓库 ——
+const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js'];
+const forbidden = [
+  /\bfetch\s*\(/,
+  /new\s+WebSocket/,
+  /XMLHttpRequest/,
+  /from\s+'node:(http|https|net|dns|tls|child_process)'/,
+  /require\(\s*['"](http|https|net|dns|tls|child_process)['"]\s*\)/,
+  /['"]axios['"]/,
+];
+const leaked = [];
+for (const rel of codeFiles) {
+  const text = fs.readFileSync(path.join(pkgRoot, rel), 'utf8');
+  for (const pattern of forbidden) if (pattern.test(text)) leaked.push(`${rel} 命中 ${pattern}`);
+}
+check('代码里没有出网/起进程的路子', leaked.length === 0, leaked.join('；'));
+
+const savedDir = process.env.DSH_MEDIA_LEDGER_DIR;
+delete process.env.DSH_MEDIA_LEDGER_DIR;
+const defaultDir = resolveDataDir({});
+if (savedDir !== undefined) process.env.DSH_MEDIA_LEDGER_DIR = savedDir;
+check('默认台账目录在仓库外', !defaultDir.toLowerCase().startsWith(pkgRoot.toLowerCase()), defaultDir);
+
+const ignoreText = fs.readFileSync(path.join(pkgRoot, '.gitignore'), 'utf8');
+check('.gitignore 挡住 data/ 与 *.jsonl', /^data\/$/m.test(ignoreText) && /\*\.jsonl/m.test(ignoreText));
+
+const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+check('没有第三方依赖', Object.keys(pkg.dependencies || {}).length === 0, JSON.stringify(pkg.dependencies || {}));
+
+// —— 详情页：meta.detail 必须是存在的 .md 路径，文档恰好一行图片 ——
+const detailProblems = [];
+for (const locale of ['zh', 'en']) {
+  const meta = JSON.parse(fs.readFileSync(path.join(pkgRoot, `locale/${locale}.json`), 'utf8')).meta || {};
+  const rel = meta.detail;
+  if (typeof rel !== 'string' || !rel.endsWith('.md')) {
+    detailProblems.push(`${locale}.json 的 meta.detail 不是 .md 路径：${JSON.stringify(rel)}`);
+    continue;
+  }
+  const file = path.join(pkgRoot, rel);
+  if (!fs.existsSync(file)) {
+    detailProblems.push(`${rel} 不存在`);
+    continue;
+  }
+  const lines = fs.readFileSync(file, 'utf8').trim().split(/\r?\n/).filter((line) => line.trim());
+  const image = lines.length === 1 ? /^!\[[^\]]*\]\(([^)]+)\)$/.exec(lines[0].trim()) : null;
+  if (!image) {
+    detailProblems.push(`${rel} 必须是恰好一行 ![](图)`);
+  } else if (!fs.existsSync(path.join(path.dirname(file), image[1]))) {
+    detailProblems.push(`${rel} 引用的图 ${image[1]} 不存在`);
+  }
+}
+check('详情页文档合法（路径 + 单图 + 图存在）', detailProblems.length === 0, detailProblems.join('；'));
 
 fs.rmSync(dir, { recursive: true, force: true });
 

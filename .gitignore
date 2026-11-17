@@ -1,6 +1,10 @@
 # 临时产物
 tmp/
 
+# 台账数据（插件默认写到 ~/media-ledger，仓库里一份都不该有）
+data/
+*.jsonl
+
 # Python
 __pycache__/
 *.pyc
