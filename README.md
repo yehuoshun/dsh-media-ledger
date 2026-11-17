@@ -135,7 +135,10 @@ docs/DETAIL.md     插件详情页（恰好一行图片，英文）
 docs/DETAIL.zh.md  插件详情页（中文）
 docs/preview.svg   详情页示意图
 docs/DESIGN.md     设计取舍与后续
+AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私、详情页契约、验收命令）
 ```
+
+改这个仓库前先读 [`AGENTS.md`](AGENTS.md)，那里写着不会明说在代码里的坑（`meta.detail` 要路径不要描述、改详情页必须升版本、隐私断言别绕着走、push 成功别看 exit code）。
 
 ## 自证
 
