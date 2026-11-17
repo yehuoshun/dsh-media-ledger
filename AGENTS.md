@@ -57,7 +57,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 70/70**（含面板整形、桥路由、客户端 bundle 契约）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、25 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
+- 期望：`smoke.mjs` → **全过 74/74**（含面板整形、桥路由、客户端 bundle 契约）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、25 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 
@@ -98,7 +98,7 @@ plugin_manager install_bundle(target="<本仓库目录>")
 1. **不联网**：`index.js` 与 `lib/*.js` 里不得出现 `fetch(` / `WebSocket` / `XMLHttpRequest` / `node:http(s)` / `node:net` / `node:dns` / `node:tls` / `axios`。真要联网，先停下来问用户，并同步删掉那条断言。
 2. **不起进程**：不得 `node:child_process`。
 3. **无第三方依赖**：`package.json` 不放 `dependencies`（宿主带什么就用什么）。
-4. **台账不落仓库**：`resolveDataDir(config)` 的优先级是 `config.dataDir` → `DSH_MEDIA_LEDGER_DIR` → `<工作区根>/data/media-ledger` → `~/media-ledger`。工作区根由 `findWorkspaceRoot()` 向上找「同层既有 `AGENTS.md` 又有 `code/` 或 `work/`」的目录，找不到才退回用户目录——这两种位置都在仓库外；只认这两个标记，插件仓库自己不会被当成工作区根。任何人把 `dataDir` 指进仓库，`.gitignore` 必须仍能挡住。
+4. **台账不落仓库**：`resolveDataDir(config)` 的优先级是 `config.dataDir` → `DSH_MEDIA_LEDGER_DIR` → `<工作区根>/data/media-ledger` → `~/media-ledger`。工作区根优先取宿主注入的提示（`index.js` 把 `ctx.get('workspaceRegistry')` 包成惰性函数塞进 `config.workspaceRoot`，桌面版插件进程的 cwd 不在工作区，光靠 cwd 找不到），取不到才用 `findWorkspaceRoot()` 从 cwd 向上找「同层既有 `AGENTS.md` 又有 `code/` 或 `work/`」的目录，找不到才退回用户目录——这两种位置都在仓库外；只认这两个标记，插件仓库自己不会被当成工作区根。任何人把 `dataDir` 指进仓库，`.gitignore` 必须仍能挡住。
 5. **真实数据一律不入库**：真实账号名、播放/涨粉原始导出、cookie、token、手机号、本机绝对路径（带盘符的那种）、本机私有项目名都不许提交。测试数据必须一眼可辨是假数据（命名含 `mock`/`fake`/`demo`/`example`，或注释写明）。
 6. 用户自己的台账数据是**用户的**：不要为了「修 bug」去移动、截断、重写它；写盘只能追加（JSONL append-only，坏行报行号，不静默丢弃）。
 

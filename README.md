@@ -44,7 +44,7 @@
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `dataDir` | 工作区根下的 `data/media-ledger`（查找顺序：`config.dataDir` → 环境变量 `DSH_MEDIA_LEDGER_DIR` → 该默认值 → 找不到工作区时退回 `~/media-ledger`） | 台账目录，放哪由你定，不塞进 DSH 自己的存储 |
+| `dataDir` | 工作区根下的 `data/media-ledger`（查找顺序：`config.dataDir` → 环境变量 `DSH_MEDIA_LEDGER_DIR` → 工作区根下的 `data/media-ledger`（工作区根优先取宿主注入的那个） → 找不到工作区时退回 `~/media-ledger`） | 台账目录，放哪由你定，不塞进 DSH 自己的存储 |
 | `sidebar` | `true` | 是否在 DSH 左侧栏显示「自媒体台账」入口；只有显式写 `false` 才隐藏，面板里的开关写的就是这一项 |
 | `titleLimits` | 见 `lib/pack.js` | 按平台覆盖标题字数上限 |
 | `coverSpecs` | 见 `lib/pack.js` | 按平台覆盖封面建议尺寸 |
@@ -167,7 +167,7 @@ AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私�
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 70/70
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 74/74
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
