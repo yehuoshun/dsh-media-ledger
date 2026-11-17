@@ -37,14 +37,14 @@
     - id: media-ledger
       name: dsh-media-ledger
       config:
-        dataDir: D:\media-ledger-data   # 自己挑个位置，放笔记/项目目录里都行
+        dataDir: D:\notes\media-ledger   # 不写就落到工作区 data/media-ledger，这里只是示例
 ```
 
 配置项（都可省）：
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `dataDir` | 环境变量 `DSH_MEDIA_LEDGER_DIR`，再退到 `~/media-ledger` | 台账目录，放哪由你定，不塞进 DSH 自己的存储 |
+| `dataDir` | 工作区根下的 `data/media-ledger`（查找顺序：`config.dataDir` → 环境变量 `DSH_MEDIA_LEDGER_DIR` → 该默认值 → 找不到工作区时退回 `~/media-ledger`） | 台账目录，放哪由你定，不塞进 DSH 自己的存储 |
 | `titleLimits` | 见 `lib/pack.js` | 按平台覆盖标题字数上限 |
 | `coverSpecs` | 见 `lib/pack.js` | 按平台覆盖封面建议尺寸 |
 
@@ -103,7 +103,7 @@ media(action: "report", group_by: "kind")
 ## 隐私：数据不出本机
 
 - **不联网**：插件代码里没有 `fetch` / `http` / `https` / `net` / `child_process`，没有任何出网路径，也没有第三方依赖（`dependencies` 为空）。`test/smoke.mjs` 里有一条断言守着这个事实，谁哪天加了出网代码，测试会先挂。
-- **不写进仓库**：台账默认在 `~/media-ledger`（仓库外）。`.gitignore` 已挡住 `data/` 与 `*.jsonl`，即使把 `dataDir` 指进仓库也不会被提交。
+- **不写进仓库**：台账默认在工作区根的 `data/media-ledger`（按上表可改，找不到工作区才退回 `~/media-ledger`），两种位置都在仓库外。`.gitignore` 已挡住 `data/` 与 `*.jsonl`，即使把 `dataDir` 指进仓库也不会被提交。
 - **不含示例数据**：仓库里没有任何真实作品、账号 ID、播放量，只有代码、文档和自测用的假数据（`test/` 里，一眼可辨是 mock）。
 - **不碰宿主的存储**：数据目录由你配置，插件不往 DSH 自己的 profile 或数据库里塞东西。
 

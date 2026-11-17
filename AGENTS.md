@@ -30,7 +30,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 |---|---|
 | `index.js` | 插件入口：`name = 'media-ledger'`、`inject = ['tools']`，在 `ctx.effect` 里调 `lib/tool.js` 的 `registerTools(ctx, config)` 并在回收函数里逐个 `dispose()` |
 | `lib/config.js` | 平台归一、封面默认值、标题字数上限、`DEFAULT_*` 常量 |
-| `lib/store.js` | `resolveDataDir` / JSONL 读写 / `nextPostId` / `loadLedger`（重复 id 直接抛错） |
+| `lib/store.js` | `resolveDataDir`（`config.dataDir` → 环境变量 → 工作区 `data/media-ledger` → `~/media-ledger`）/ `findWorkspaceRoot` / JSONL 读写 / `nextPostId` / `loadLedger`（重复 id 直接抛错） |
 | `lib/metrics.js` | 时间解析、快照取最新、中位数、`buildRows`、互动率、`buildReport` |
 | `lib/pack.js` | 发布包：标题字数、标签归一截断、封面比例校验 |
 | `lib/tool.js` | 工具定义：参数 schema、action 分发、错误收敛成 `{ ok:false, error }` |
@@ -54,7 +54,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 41/41**；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、25 个参数键、卸载后工具回收。
+- 期望：`smoke.mjs` → **全过 46/46**；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、25 个参数键、卸载后工具回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 
@@ -95,7 +95,7 @@ plugin_manager install_bundle(target="<本仓库目录>")
 1. **不联网**：`index.js` 与 `lib/*.js` 里不得出现 `fetch(` / `WebSocket` / `XMLHttpRequest` / `node:http(s)` / `node:net` / `node:dns` / `node:tls` / `axios`。真要联网，先停下来问用户，并同步删掉那条断言。
 2. **不起进程**：不得 `node:child_process`。
 3. **无第三方依赖**：`package.json` 不放 `dependencies`（宿主带什么就用什么）。
-4. **台账不落仓库**：`resolveDataDir(config)` 的优先级是 `config.dataDir` → `DSH_MEDIA_LEDGER_DIR` → `~/media-ledger`（仓库外）。任何人把 `dataDir` 指进仓库，`.gitignore` 必须仍能挡住。
+4. **台账不落仓库**：`resolveDataDir(config)` 的优先级是 `config.dataDir` → `DSH_MEDIA_LEDGER_DIR` → `<工作区根>/data/media-ledger` → `~/media-ledger`。工作区根由 `findWorkspaceRoot()` 向上找「同层既有 `AGENTS.md` 又有 `code/` 或 `work/`」的目录，找不到才退回用户目录——这两种位置都在仓库外；只认这两个标记，插件仓库自己不会被当成工作区根。任何人把 `dataDir` 指进仓库，`.gitignore` 必须仍能挡住。
 5. **真实数据一律不入库**：真实账号名、播放/涨粉原始导出、cookie、token、手机号、本机绝对路径（带盘符的那种）、本机私有项目名都不许提交。测试数据必须一眼可辨是假数据（命名含 `mock`/`fake`/`demo`/`example`，或注释写明）。
 6. 用户自己的台账数据是**用户的**：不要为了「修 bug」去移动、截断、重写它；写盘只能追加（JSONL append-only，坏行报行号，不静默丢弃）。
 

@@ -13,7 +13,7 @@ import { buildRows, buildReport, parseTs, latestSnapshots, median, interaction }
 import { buildPack } from '../lib/pack.js';
 import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
-import { appendJsonl, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
+import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
 let pass = 0;
@@ -137,8 +137,30 @@ check('代码里没有出网/起进程的路子', leaked.length === 0, leaked.jo
 const savedDir = process.env.DSH_MEDIA_LEDGER_DIR;
 delete process.env.DSH_MEDIA_LEDGER_DIR;
 const defaultDir = resolveDataDir({});
+const workspaceRoot = findWorkspaceRoot(pkgRoot);
+const expectedDefault = workspaceRoot ? path.join(workspaceRoot, 'data', 'media-ledger') : defaultDir;
+const envDir = (() => {
+  process.env.DSH_MEDIA_LEDGER_DIR = path.join(dir, 'env-ledger');
+  const value = resolveDataDir({});
+  return value;
+})();
 if (savedDir !== undefined) process.env.DSH_MEDIA_LEDGER_DIR = savedDir;
+else delete process.env.DSH_MEDIA_LEDGER_DIR;
 check('默认台账目录在仓库外', !defaultDir.toLowerCase().startsWith(pkgRoot.toLowerCase()), defaultDir);
+if (workspaceRoot) {
+  check('默认落到工作区 data/media-ledger', defaultDir === path.join(workspaceRoot, 'data', 'media-ledger'), defaultDir);
+} else {
+  check('找不到工作区时退回用户目录', defaultDir === path.join(os.homedir(), 'media-ledger'), defaultDir);
+}
+check('环境变量能改目录', envDir === path.join(dir, 'env-ledger'), envDir);
+check('配置优先于环境变量', resolveDataDir({ dataDir: path.join(dir, 'cfg-ledger') }) === path.join(dir, 'cfg-ledger'));
+
+// 工作区识别：只认「AGENTS.md + code|work」同层，插件仓库自己不会被误认（否则台账写回仓库里）
+const fakeRoot = path.join(dir, 'ws');
+fs.mkdirSync(path.join(fakeRoot, 'code', 'proj'), { recursive: true });
+fs.writeFileSync(path.join(fakeRoot, 'AGENTS.md'), '# ws\n', 'utf8');
+check('能往上找到工作区根', findWorkspaceRoot(path.join(fakeRoot, 'code', 'proj')) === fakeRoot, findWorkspaceRoot(path.join(fakeRoot, 'code', 'proj')));
+check('插件仓库自己不算工作区根', findWorkspaceRoot(pkgRoot) !== pkgRoot, findWorkspaceRoot(pkgRoot));
 
 const ignoreText = fs.readFileSync(path.join(pkgRoot, '.gitignore'), 'utf8');
 check('.gitignore 挡住 data/ 与 *.jsonl', /^data\/$/m.test(ignoreText) && /\*\.jsonl/m.test(ignoreText));
