@@ -108,13 +108,42 @@ media(action: "report", group_by: "kind")
 | `captured_at` | 报数时刻（**真时间**，取最新快照用） |
 | `play` / `like` / `comment` / `share` / `collect` | 播放、赞、评、转、藏 |
 | `fans` | 涨粉（归档用） |
-| `source` | 后台导出 / 手抄 |
+| `source` | 后台导出 / 手抄 / `B站接口` |
+| `extras` | 附带口径（可选）：B站导入时放 `settled`（结算值：`play_settled` / `view_dedup` / `progress_pct` / 粉丝路人拆分）与 `diagnose`（画像：性别、年龄、地区、标签、平台占比、受众构成），台账统计不读它 |
 
 三条口径（都是踩过坑才定下来的）：
 
 1. **一条作品多次报数只取 `captured_at` 最新那条**，比较用真时间解析——字符串比大小会让 `2026-11-17T09:00` 压过 `2026-11-17 18:00`、`2026-9-5` 压过 `2026-11-15`；
 2. **用中位数不用均值**：一条爆款就能把均值拉到没有参考价值；
 3. **互动率只在「同一条快照里同时有播放和互动」的行上算**，分子分母同批，否则会算出 10050%；混龄期的数不可比，用 `max_age_hours` 取同一批。
+
+## B站数据同步（采集脚本在插件外）
+
+插件本体不联网（见「隐私」一节），所以 B站后台数据走**两步**，中间用一份 JSON 交接：
+
+```powershell
+# 1. 采集（独立 Python 脚本，不依赖第三方库；凭据放工作区根的 config/bilibili_main.txt）
+python scripts\bili_sync.py login                       # 首次或 cookie 过期：扫码登录，不手抄 cookie
+python scripts\bili_sync.py fetch --max 10              # 产出 <工作区根>\tmp\bili-import.json
+
+# 2. 入库（工具的 import_bili，纯离线：读 JSON、写 JSONL，不发请求）
+media { action: "import_bili", path: "<工作区根>\tmp\bili-import.json" }
+media { action: "import_bili", path: "…", dry_run: true }   # 先看会新建/更新几条，不写盘
+```
+
+采集脚本走的是创作中心自己的接口（`member.bilibili.com/x/web/data/archive`、`archive_diagnose/*`、`archive/index`、`index/stat` 等），只要 Cookie（无需 wbi 签名），但**必须带桌面 UA 与 member.bilibili.com 的 Referer**。它只读不清，退码分档：`0` 成功 / `1` 一般错误 / `2` cookie 过期需重新 `login` / `3` 触发风控降频 / `4` 二维码失效。
+
+口径上有个必须记住的陷阱：**同一条稿件的「播放」有三个不同的值**——
+
+| 取值处 | 含义 |
+|---|---|
+| `view.stat.view` | 实时、未去重，台账用这个（与后台「核心数据」卡片一致） |
+| `archive.stat.play` | 次日 12:00 结算的累计播放 |
+| `archive.play.view` | 结算后的**去重**观看数 |
+
+所以 `import_bili` 把实时的 `realtime.*` 写进 `play/like/comment/share/collect`，把结算值与 diagnose 画像整块塞进 `extras`（`settled` / `diagnose`），两边都不丢、也不混着比。另有两条降级规则：`archive.stat` 可能是 `null`（刚发布/刚过审），此时不写 0 而记警告；`area`、`playsource` 可能返回 `null`（后者已废弃，平台占比改看 `diagnose.play_proportion`）。`archive_diagnose/compare` 的 `not_ready_field` 里的指标是「还没算好」，同样不能当真实的 0。
+
+
 
 ## 隐私：数据不出本机
 
@@ -144,6 +173,7 @@ lib/config.js      平台别名、配置合并
 lib/store.js       JSONL 读写（BOM 容错、坏行报行号、重复 id 报错、下一号）
 lib/metrics.js     时间解析、最新快照、中位数、互动率、分组报告
 lib/pack.js        发布包文本 + 标题/话题/封面的机械校验
+lib/bilibili.js    B站采集产出的 JSON → 台账记录（纯函数映射，不联网）
 lib/tool.js        唯一工具 media（action 分派）
 lib/panel.js       面板数据整形（只搬运 metrics 的口径，不另算指标）
 lib/bridge.js      Host 侧面板桥：/api/dsh-media-ledger/state 与 /sidebar
@@ -154,6 +184,8 @@ docs/DETAIL.md     插件详情页（恰好一行图片，英文）
 docs/DETAIL.zh.md  插件详情页（中文）
 docs/preview.svg   详情页示意图
 docs/DESIGN.md     设计取舍与后续
+scripts/bili_sync.py       B站采集脚本（独立进程，插件本体不联网）
+scripts/README.md          采集脚本的用法、接口清单与口径说明
 AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私、详情页契约、验收命令）
 ```
 
@@ -167,7 +199,7 @@ AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私�
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 70/70
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 94/94
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
