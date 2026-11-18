@@ -218,7 +218,7 @@ f.headers["Sc-T"] = window.__xhs_sc__.getXHSToken() || "";
 1. 脚本用 `--remote-debugging-port=9333 --user-data-dir=<临时 profile>` 起本机 **Chrome/Edge**（本机实测 Chrome 157 可用，Edge 也在），导航到 `https://creator.xiaohongshu.com/login`。
 2. 窗口里是**小红书官方的登录二维码**，用户用 App 扫（体验和自己开浏览器登录完全一样）。
 3. 脚本通过 CDP 轮询 `Network.getAllCookies`，等到 `web_session` 出现即为登录成功。
-4. 把 `xiaohongshu.com` 域的 cookie 串写入 `config/xhs_<account>.txt`，关掉浏览器和临时 profile。
+4. 把 `xiaohongshu.com` 域的 cookie 串写入 `config/xhs_<account>.json`，关掉浏览器和临时 profile。
 
 实测到的 cookie：登录页自己会下发 `a1`、`webId`、`websectiga`、`sec_poison_id`、`xsecappid`、`gts`、`acw_tc`、`loadts`、`ets`、`webBuild`、`gid`；登录成功后多 `web_session`。
 
@@ -259,7 +259,7 @@ metric = { post_id, captured_at, play, like, comment, share, collect, fans?, ext
 | 项 | 约定（对齐 `bili_sync.py`） |
 |---|---|
 | 依赖 | 只用标准库（`zipfile` + `xml.etree.ElementTree` 解 xlsx；`subprocess` + `socket` 起浏览器） |
-| 凭据 | `<工作区根>/config/xhs_<account>.txt`，一行 `name=value; name=value; …`（只读取、不回显） |
+| 凭据 | `<工作区根>/config/xhs_<account>.json`，一个 JSON 对象（`json.dumps(indent=2)`；旧的一行 `k=v; k=v` 仍能读）（只读取、不回显） |
 | 输出 | 默认 `<工作区根>/tmp/xhs-notes-<时间>.json`，`--out` 可改，`--dump` 另存原始导出表行 |
 | `login` | 借浏览器扫码（§5.3），拿到 `web_session` 即写凭据 |
 | `fetch` | 起浏览器 → 灌 cookie → 开数据分析页 → 点「导出数据」→ 等下载 → 解析 xlsx → 写契约 JSON |
@@ -274,7 +274,7 @@ metric = { post_id, captured_at, play, like, comment, share, collect, fans?, ext
 
 已打通（2026-11-18 实测）：
 
-- [x] 扫码登录 → `config/xhs_main.txt`（14 个 cookie 字段），自查页面显示登录态
+- [x] 扫码登录 → `config/xhs_main.json`（14 个 cookie 字段），自查页面显示登录态
 - [x] 导出按钮下载 xlsx（4193 字节 / 2 篇笔记），解析出 13 列
 - [x] `fetch --headless` 全链路跑通，产出契约 JSON，插件的 `normalizeImport` 映射正确（`play=74/132`、`extras={impressions:369, cover_click_rate:3.7, view_time:6}`）
 - [x] galaxy 网关登录态下的签名行为（§4.3）

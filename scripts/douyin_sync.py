@@ -9,7 +9,7 @@
     脚本产出 JSON，插件用纯函数离线灌进台账。
 
 四个子命令：
-    login     用浏览器 CDP 扫码登录，把 cookie 存到 <工作区根>/config/douyin_<account>.txt
+    login     用浏览器 CDP 扫码登录，把 cookie 存到 <工作区根>/config/douyin_<account>.json
     fetch     拉作品列表 + 每个作品的详情指标，产出 <工作区根>/tmp/douyin-import.json
     whoami    只验证凭据是否还有效、顺带看一眼账号信息，不写任何文件
     selftest  起本地假服务跑一遍 fetch 全链路并断言输出契约（不联网、不开浏览器）
@@ -341,7 +341,7 @@ def config_dir() -> Path:
 
 
 def credential_path(account: str) -> Path:
-    return config_dir() / f"douyin_{account}.txt"
+    return config_dir() / f"douyin_{account}.json"
 
 
 def browser_profile_dir(account: str) -> Path:
@@ -1722,7 +1722,7 @@ def cleanup_profile(profile_dir: Path) -> bool:
     """删掉登录用的独立 profile。
 
     那个目录里是一份**活的**登录态：cookie、LocalStorage、缓存全在，能直接续上账号。
-    既然凭据已经单独落 `config/douyin_<account>.txt`，留它只是把一份登录态摊在 `tmp/` 里，
+    既然凭据已经单独落 `config/douyin_<account>.json`，留它只是把一份登录态摊在 `tmp/` 里，
     所以默认删掉；只有想复用这份登录态重试时才加 `--keep-profile`。
     """
     if not profile_dir.exists():
@@ -2029,7 +2029,7 @@ def cmd_selftest(args) -> int:
 
     try:
         fake_cookie_value = "fake-sessionid-value-0001"
-        credential_file = config_dir_path / "douyin_selftest.txt"
+        credential_file = config_dir_path / "douyin_selftest.json"
         credential_file.write_text(
             json.dumps({"sessionid": fake_cookie_value, "ttwid": "fake-ttwid-value"}, ensure_ascii=False),
             encoding="utf-8",
@@ -2262,7 +2262,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="douyin_sync.py",
         description=(
             "抖音创作中心采集器（独立脚本，插件本体不联网）。\n"
-            "login 用浏览器 CDP 扫码登录，把 cookie 存到 <工作区根>/config/douyin_<account>.txt；\n"
+            "login 用浏览器 CDP 扫码登录，把 cookie 存到 <工作区根>/config/douyin_<account>.json；\n"
             "fetch 采集作品列表与每篇的指标，产出 JSON 给插件导入；\n"
             "whoami 只验证凭据是否还有效；selftest 用本地假服务自检输出契约。"
         ),
@@ -2280,7 +2280,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     login_parser = subparsers.add_parser(
         "login",
-        help="用浏览器扫码登录，把 cookie 写进 config/douyin_<account>.txt",
+        help="用浏览器扫码登录，把 cookie 写进 config/douyin_<account>.json",
         description=(
             "启动一个独立 profile 的浏览器（不碰你自己开着的窗口），打开创作中心内容管理页，\n"
             "你在那个窗口里扫码；脚本通过 CDP 轮询作品列表接口判断是否登录成功，\n"
@@ -2293,7 +2293,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--account",
         default="main",
         metavar="NAME",
-        help="账号简称，决定凭据文件名 douyin_<NAME>.txt（默认 main）",
+        help="账号简称，决定凭据文件名 douyin_<NAME>.json（默认 main）",
     )
     login_parser.add_argument(
         "--port",
@@ -2347,7 +2347,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--account",
         default="main",
         metavar="NAME",
-        help="账号简称，读 config/douyin_<NAME>.txt（默认 main）",
+        help="账号简称，读 config/douyin_<NAME>.json（默认 main）",
     )
     fetch_parser.add_argument(
         "--max",
@@ -2390,7 +2390,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--account",
         default="main",
         metavar="NAME",
-        help="账号简称，读 config/douyin_<NAME>.txt（默认 main）",
+        help="账号简称，读 config/douyin_<NAME>.json（默认 main）",
     )
     whoami_parser.add_argument(
         "--sleep",

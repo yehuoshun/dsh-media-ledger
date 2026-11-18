@@ -9,14 +9,18 @@ Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/<平台>-impor
 
 | 脚本 | 平台 | 工具 action | 凭据 |
 |---|---|---|---|
-| `bili_sync.py` | B站 | `import_bili` | `config/bilibili_<account>.txt` |
-| `xhs_sync.py` | 小红书 | `import_xhs` | `config/xhs_<account>.txt` |
-| `douyin_sync.py` | 抖音 | `import_douyin` | `config/douyin_<account>.txt` |
+| `bili_sync.py` | B站 | `import_bili` | `config/bilibili_<account>.json` |
+| `xhs_sync.py` | 小红书 | `import_xhs` | `config/xhs_<account>.json` |
+| `douyin_sync.py` | 抖音 | `import_douyin` | `config/douyin_<account>.json` |
 
-**凭据文件名是脚本与面板共用的约定**：必须是 `config/<平台>_<账号>.txt`（视频号还没有脚本）。
+**凭据文件名是脚本与面板共用的约定**：必须是 `config/<平台>_<账号>.json`（视频号还没有脚本）。
 脚本按这个名字找文件，插件面板也按这个名字判断「这个平台绑没绑、什么时候绑的」——
-存成 `config/bilibili.txt`（少了 `_<账号>`）时，脚本会报「凭据文件不存在」，面板会一直显示「未绑定」。
+存成 `config/bilibili.json`（少了 `_<账号>`）时，脚本会报「凭据文件不存在」，面板会一直显示「未绑定」。
 面板只看文件名与修改时间，**不读凭据内容**。
+
+**扩展名 0.5.9 起统一成 `.json`**：0.5.8 及以前把同一份内容存成 `config/<平台>_<账号>.txt`，
+现在脚本与面板都只认 `.json`，旧文件不再识别（内容格式没变，只是文件名和内容自相矛盾）。
+把旧文件改个名就能继续用，不想动文件就重新 `login` 一次。
 
 两个脚本各自独立（没有共享的 utils 模块），只有小红书那套互相引用：`xhs_sync.py`（入口）→
 `xhs_login.py`（扫码）→ `xhs_browser.py`（起本机 Chrome，CDP 直通）。用法与退出码见下文。
@@ -34,7 +38,7 @@ Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/<平台>-impor
    账号名走 `^[A-Za-z0-9_-]{1,32}$`（与脚本一致；省略时按 `main`；一个平台可以绑多个账号）、参数进数组而不是 shell 字符串、
    `shell` 永不开、330 秒超时（脚本自己等扫码最长 300 秒——抖音默认 180，桥多留一截收尾）、同一时刻只允许一个登录任务、插件 dispose 时 kill；
    `lib/` 其他文件与 `index.js` 仍然零 `child_process`。
-   **面板上那个「扫码登录」按钮执行的就是 `python scripts/bili_sync.py login --account <你在面板里填的账号>`（默认 `main`；一个平台可以登多个账号，各占一份 `<平台>_<账号>.txt`）**
+   **面板上那个「扫码登录」按钮执行的就是 `python scripts/bili_sync.py login --account <你在面板里填的账号>`（默认 `main`；一个平台可以登多个账号，各占一份 `<平台>_<账号>.json`）**
    （抖音、小红书把脚本名换掉）。想手工复现照着敲即可，两边看到的报错也是同一份。
    `test/smoke.mjs` 用三组断言守着这条例外不被扩大：`bridge.js` 之外零命中、`spawn` 全仓库只出现一次、`shell: true` 零命中。
 3. **抓取必须联网**：B站没有可用的开放数据接口，只能带 cookie 打创作中心的内部接口。
@@ -61,7 +65,7 @@ python -m pip install qrcode pillow   # 只在你要用 login --qr 时安装
 
 | 用途 | 位置 |
 |---|---|
-| 凭据（cookie） | `<工作区根>\config\bilibili_<account>.txt` |
+| 凭据（cookie） | `<工作区根>\config\bilibili_<account>.json` |
 | 身份旁路文件（`login` 验证通过后写入，只有昵称 / mid / 等级） | `<工作区根>\config\bilibili_<account>.identity.json` |
 | 登录二维码图片（仅 `login --qr`） | `<工作区根>\tmp\bili-qr-<account>.png` |
 | `fetch` 默认输出 | `<工作区根>\tmp\bili-import.json` |
@@ -90,7 +94,7 @@ python scripts/bili_sync.py login --account work
    （默认 300）。进度行每 10 秒打一次「已等 N/M 秒（bilibili.com 域已有 cookie K 个）」；
    超时退出码 `4`，重跑一次 `login` 即可。窗口关早了也一样：脚本会告诉你等了多久、手里有哪些 cookie。
 4. 成功后缺 `buvid3`/`buvid4` 就补一次 `finger/spi`（缺了这两个，部分接口会当匿名请求），
-   把 cookie 写成 JSON 对象存进 `<工作区根>\config\bilibili_<account>.txt`
+   把 cookie 写成 JSON 对象存进 `<工作区根>\config\bilibili_<account>.json`
    （UTF-8、无 BOM、缩进 2、以换行结尾），最后调 `nav` 接口验证 `isLogin == true`，
    打印 `昵称(mid)` 与 `level` 后返回 0。
 5. 顺手把这次 `nav` 校验到的身份写进 `<工作区根>\config\bilibili_<account>.identity.json`
@@ -141,7 +145,7 @@ python scripts/bili_sync.py fetch --max 20 --compare-size 5
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--account NAME` | `main` | 读 `config\bilibili_<NAME>.txt` |
+| `--account NAME` | `main` | 读 `config\bilibili_<NAME>.json` |
 | `--max N` | `50` | 按发布时间倒序最多采多少个稿件 |
 | `--out PATH` | `<工作区根>\tmp\bili-import.json` | 输出路径；相对路径按当前目录解析 |
 | `--compare-size N` | `10` | 同行对比接口一次取多少条 |
@@ -263,7 +267,7 @@ query 绑死了**——抓到真实请求原样重放是 200，换任意参数�
 ### 用法
 
 ```powershell
-# 1. 扫码登录（弹一个临时浏览器窗口，用小红书 App 扫；成功写 config\xhs_main.txt）
+# 1. 扫码登录（弹一个临时浏览器窗口，用小红书 App 扫；成功写 config\xhs_main.json）
 python scripts\xhs_sync.py login --account main --timeout 600
 
 # 2. 采集（起浏览器 → 点导出 → 解析 xlsx → 写 JSON）
@@ -287,7 +291,7 @@ media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
 | `--keep-workbook` | 保留下载的 xlsx |
 | `--timeout` | 等下载的超时秒数（默认 120） |
 
-> 凭据文件 `config\xhs_<账号>.txt` 从 0.5.6 起是 **JSON 对象**（缩进 2、UTF-8 无 BOM、以换行结尾，
+> 凭据文件 `config\xhs_<账号>.json` 从 0.5.6 起是 **JSON 对象**（缩进 2、UTF-8 无 BOM、以换行结尾，
 > 与 B站/抖音同一套）；旧的一行 `k=v; k=v` 仍能读，不用重扫。
 
 ### 口径（和 B站 不一样的地方）
@@ -323,7 +327,7 @@ media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
 |---|---|---|
 | 登录 | **拉起本机 Chrome/Edge** 打开官方登录页，你在窗口里扫码，脚本通过 CDP 轮询 cookie（`--qr` 才走纯 HTTP + PNG） | **拉起本机 Chrome/Edge**，你在窗口里扫码，脚本通过 CDP 轮询状态 |
 | 第三方依赖 | 默认**无**；只有 `login --qr` 要 `qrcode` + `pillow` | **无**，纯标准库（CDP 用的 WebSocket 是手写的） |
-| 凭据文件 | `config\bilibili_<account>.txt`，JSON 对象（旧单行仍能读） | `config\douyin_<account>.txt`，JSON 对象 |
+| 凭据文件 | `config\bilibili_<account>.json`，JSON 对象（旧单行仍能读） | `config\douyin_<account>.json`，JSON 对象 |
 | `fetch` 默认产物 | `tmp\bili-import.json` | `tmp\douyin-import.json` |
 | 采集方式 | 每稿 3 个接口（实时/结算/画像） | 列表 + 按批详情，指标只有一份 |
 
@@ -343,7 +347,7 @@ HTTP 200 + `{"data":{"error_code":4031,"description":"您正在尝试访问的�
 
 | 用途 | 位置 |
 |---|---|
-| 凭据（cookie） | `<工作区根>\config\douyin_<account>.txt` |
+| 凭据（cookie） | `<工作区根>\config\douyin_<account>.json` |
 | 浏览器独立 profile | `<工作区根>\tmp\douyin-profile-<account>\` |
 | `fetch` 默认输出 | `<工作区根>\tmp\douyin-import.json` |
 | `--out` 相对路径 | 按**当前工作目录**解析（不是按脚本目录） |
@@ -370,7 +374,7 @@ python scripts/douyin_sync.py login --browser "D:\Portable\chrome.exe"
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--account NAME` | `main` | 决定凭据文件名 `douyin_<NAME>.txt` |
+| `--account NAME` | `main` | 决定凭据文件名 `douyin_<NAME>.json` |
 | `--port PORT` | `9222` | 浏览器远程调试端口；被占用就换一个（如 `9333`） |
 | `--browser PATH` | 自动探测 | 先 `C:\Program Files\Google\Chrome\Application\chrome.exe`，再 `(x86)` 的 Edge |
 | `--timeout SEC` | `180` | 等扫码的最长秒数，超时退出码 `4` |
@@ -388,7 +392,7 @@ python scripts/douyin_sync.py login --browser "D:\Portable\chrome.exe"
    发 `Runtime.evaluate` 在页面里 `fetch` 一次 `work_list` 并 await：
    **返回的 `status_code` 不再是 8 就算登录成功**（比盯 URL 变化可靠）。
 5. 成功后 `Storage.getCookies` 取出 douyin.com 的 cookie，按字段名排序写成 JSON 到
-   `config\douyin_<account>.txt`，再用命令行带这份 cookie 复核一次 `work_list`；
+   `config\douyin_<account>.json`，再用命令行带这份 cookie 复核一次 `work_list`；
    终端只打印**字段名与长度**（例如 `sessionid(len=32)，ttwid(len=64)`），然后关掉浏览器。
 
 已经登录过（凭据文件存在且 `work_list` 能返回非 8）会直接提示「已登录，无需重扫」，要重扫加 `--force`。
@@ -403,7 +407,7 @@ python scripts/douyin_sync.py fetch --out tmp\dy-20261118.json
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--account NAME` | `main` | 读 `config\douyin_<NAME>.txt` |
+| `--account NAME` | `main` | 读 `config\douyin_<NAME>.json` |
 | `--max N` | `50` | 按发布时间倒序最多采多少篇，上限 `200` |
 | `--sleep SEC` | `0.35` | 两次请求之间的最小间隔，**不要调到 0.35 以下** |
 | `--out PATH` | `<工作区根>\tmp\douyin-import.json` | 输出路径；相对路径按当前目录解析 |

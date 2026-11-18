@@ -335,20 +335,33 @@ check('桥没有坏行时 errors 为空', Array.isArray(panelPayload.errors) && 
 // —— 绑定状态：面板靠 config/ 里的文件名说「这个平台接没接上」——
 check(
   '凭据文件名能解析出平台与账号',
-  parseCredentialName('bilibili_main.txt').platform === 'bilibili' && parseCredentialName('bilibili_main.txt').account === 'main',
-  JSON.stringify(parseCredentialName('bilibili_main.txt')),
+  parseCredentialName('bilibili_main.json').platform === 'bilibili' && parseCredentialName('bilibili_main.json').account === 'main',
+  JSON.stringify(parseCredentialName('bilibili_main.json')),
 );
 check(
   '认不出的凭据名不猜',
-  parseCredentialName('bilibili.txt') === null
-    && parseCredentialName('xhs_.txt') === null
+  parseCredentialName('bilibili.json') === null
+    && parseCredentialName('xhs_.json') === null
     && parseCredentialName('notes.md') === null
-    && parseCredentialName('other_main.txt') === null,
+    && parseCredentialName('other_main.json') === null,
   JSON.stringify([
-    parseCredentialName('bilibili.txt'),
-    parseCredentialName('xhs_.txt'),
+    parseCredentialName('bilibili.json'),
+    parseCredentialName('xhs_.json'),
     parseCredentialName('notes.md'),
-    parseCredentialName('other_main.txt'),
+    parseCredentialName('other_main.json'),
+  ]),
+);
+check(
+  '断代：旧 .txt 与身份旁路都不算凭据',
+  parseCredentialName('bilibili_main.txt') === null
+    && parseCredentialName('douyin_main.txt') === null
+    && parseCredentialName('bilibili_main.identity.json') === null
+    && parseCredentialName('bilibili_小号.json') === null,
+  JSON.stringify([
+    parseCredentialName('bilibili_main.txt'),
+    parseCredentialName('douyin_main.txt'),
+    parseCredentialName('bilibili_main.identity.json'),
+    parseCredentialName('bilibili_小号.json'),
   ]),
 );
 const nowStamp = new Date('2026-11-18T12:00:00Z').getTime();
@@ -360,15 +373,16 @@ check(
   [formatSavedAt(nowStamp, nowStamp), formatSavedAt(nowStamp - 26 * 3600e3, nowStamp), formatSavedAt(nowStamp - 5 * 86400e3, nowStamp)].join(','),
 );
 const bindingList = describeBindings([
-  { name: 'bilibili_main.txt', mtimeMs: nowStamp },
-  { name: 'bilibili_小号.txt', mtimeMs: nowStamp - 86400e3 },
+  { name: 'bilibili_main.json', mtimeMs: nowStamp },
+  // 账号名只收 ASCII（与三个脚本同一条正则），中文别名连脚本自己都不收，这里也别拿它当正样本
+  { name: 'bilibili_alt-2.json', mtimeMs: nowStamp - 86400e3 },
   { name: 'notes.md', mtimeMs: nowStamp },
 ]).platforms;
 check('四个平台恒在四条', bindingList.map((item) => item.key).join(',') === 'douyin,xhs,bilibili,shipinhao', bindingList.map((item) => item.key).join(','));
 check(
   '有凭据＝已绑定并列账号（新的在前）',
   bindingList[2].status === 'ready'
-    && bindingList[2].credentials.map((item) => item.account).join(',') === 'main,小号'
+    && bindingList[2].credentials.map((item) => item.account).join(',') === 'main,alt-2'
     && bindingList[2].credentials[0].savedAt === '今天',
   JSON.stringify(bindingList[2]),
 );
@@ -395,13 +409,13 @@ check(
 // —— 身份旁路文件：别名（main）说得出「这其实是哪个号」——
 check(
   '身份文件名跟着凭据文件走',
-  identityFileOf('bilibili_main.txt') === 'bilibili_main.identity.json'
-    && identityFileOf('bilibili_小号.txt') === 'bilibili_小号.identity.json'
+  identityFileOf('bilibili_main.json') === 'bilibili_main.identity.json'
+    && identityFileOf('bilibili_小号.json') === 'bilibili_小号.identity.json'
     && identityFileOf('notes.md') === '',
-  [identityFileOf('bilibili_main.txt'), identityFileOf('notes.md')].join(','),
+  [identityFileOf('bilibili_main.json'), identityFileOf('notes.md')].join(','),
 );
 const identityAware = describeBindings(
-  [{ name: 'bilibili_main.txt', mtimeMs: nowStamp }],
+  [{ name: 'bilibili_main.json', mtimeMs: nowStamp }],
   [{ name: 'bilibili_main.identity.json', uname: 'mock-uname', mid: '10001' }],
 ).platforms[2];
 check(
@@ -414,16 +428,16 @@ check(
 check(
   '身份缺字段就当没有（不往文案里塞空括号）',
   describeBindings(
-    [{ name: 'bilibili_main.txt', mtimeMs: nowStamp }],
+    [{ name: 'bilibili_main.json', mtimeMs: nowStamp }],
     [{ name: 'bilibili_main.identity.json', uname: '', mid: '' }],
   ).platforms[2].credentials[0].identity === null
-    && describeBindings([{ name: 'bilibili_main.txt', mtimeMs: nowStamp }]).platforms[2].credentials[0].identity === null,
+    && describeBindings([{ name: 'bilibili_main.json', mtimeMs: nowStamp }]).platforms[2].credentials[0].identity === null,
   'ok',
 );
 check(
   '身份文件对不上任何凭据时不影响别的平台',
   describeBindings(
-    [{ name: 'douyin_main.txt', mtimeMs: nowStamp }],
+    [{ name: 'douyin_main.json', mtimeMs: nowStamp }],
     [{ name: 'bilibili_main.identity.json', uname: 'mock-uname', mid: '10001' }],
   ).platforms[0].credentials[0].identity === null,
   'ok',
@@ -493,7 +507,7 @@ for (const [phase, sample] of Object.entries(loginSamples)) {
   if (described.phase !== phase || typeof described.message !== 'string' || described.message.length === 0) badLoginPhases.push(phase);
 }
 check('四个阶段的 phase 与 message 都讲得清', badLoginPhases.length === 0, badLoginPhases.join(','));
-check('done 的文案说清凭据落在哪', describeLoginState(loginSamples.done).message === '已保存凭据：config/bilibili_main.txt', describeLoginState(loginSamples.done).message);
+check('done 的文案说清凭据落在哪', describeLoginState(loginSamples.done).message === '已保存凭据：config/bilibili_main.json', describeLoginState(loginSamples.done).message);
 check('failed 的文案取脚本报错的最后一行', describeLoginState(loginSamples.failed).message.includes('打不开浏览器'), describeLoginState(loginSamples.failed).message);
 check('running 的文案让用户去扫码', describeLoginState(loginSamples.running).message === '已打开浏览器窗口，请在浏览器里扫码', describeLoginState(loginSamples.running).message);
 check(
@@ -550,18 +564,20 @@ check(
   Object.keys(stateBody).join(','),
 );
 
-// 绑定状态走真目录：config/ 里只认 .txt，且只取名字与时间（绝不读内容）
+// 绑定状态走真目录：config/ 里只认 .json，且只取名字与时间（绝不读内容）
 const wsDir = path.join(dir, 'binding-ws');
 fs.mkdirSync(path.join(wsDir, 'code'), { recursive: true });
 fs.mkdirSync(path.join(wsDir, 'config'), { recursive: true });
 fs.writeFileSync(path.join(wsDir, 'AGENTS.md'), '# mock workspace\n', 'utf8');
-fs.writeFileSync(path.join(wsDir, 'config', 'douyin_main.txt'), 'mock-cookie-not-real\n', 'utf8');
+fs.writeFileSync(path.join(wsDir, 'config', 'douyin_main.json'), 'mock-cookie-not-real\n', 'utf8');
 fs.writeFileSync(path.join(wsDir, 'config', 'notes.md'), 'mock notes\n', 'utf8');
+// 0.5.8 及以前的老扩展名：内容同样是 JSON，但文件名不带 .json，现在一律不认
+fs.writeFileSync(path.join(wsDir, 'config', 'bilibili_main.txt'), 'mock-legacy-not-real\n', 'utf8');
 const creds = listCredentialFiles({ workspaceRoot: wsDir });
 check(
-  '扫 config 只认 .txt 且只带名字与时间',
+  '扫 config 只认 .json 且只带名字与时间',
   creds.dir === path.join(wsDir, 'config')
-    && creds.entries.map((entry) => entry.name).join(',') === 'douyin_main.txt'
+    && creds.entries.map((entry) => entry.name).join(',') === 'douyin_main.json'
     && Object.keys(creds.entries[0]).sort().join(',') === 'mtimeMs,name',
   JSON.stringify(creds),
 );
@@ -688,15 +704,15 @@ check('GET /login/state 拒绝别的 method', loginStateWrongRes.statusCode === 
 const unbindWs = path.join(dir, 'unbind-ws');
 const unbindConfig = path.join(unbindWs, 'config');
 fs.mkdirSync(unbindConfig, { recursive: true });
-fs.writeFileSync(path.join(unbindConfig, 'bilibili_main.txt'), 'mock-credential\n', 'utf8');
+fs.writeFileSync(path.join(unbindConfig, 'bilibili_main.json'), 'mock-credential\n', 'utf8');
 fs.writeFileSync(path.join(unbindConfig, 'bilibili_main.identity.json'), '{"uname":"mock-uname"}\n', 'utf8');
-fs.writeFileSync(path.join(unbindConfig, 'bilibili_side.txt'), 'mock-credential-2\n', 'utf8');
+fs.writeFileSync(path.join(unbindConfig, 'bilibili_side.json'), 'mock-credential-2\n', 'utf8');
 const unbindPlan = buildUnbindPlan('bilibili', 'main', unbindConfig);
 check(
   '解绑计划只算「凭据 + 身份」两个文件',
   unbindPlan.ok === true
     && unbindPlan.plan.dir === path.resolve(unbindConfig)
-    && unbindPlan.plan.files.map((item) => item.name).join(',') === 'bilibili_main.txt,bilibili_main.identity.json',
+    && unbindPlan.plan.files.map((item) => item.name).join(',') === 'bilibili_main.json,bilibili_main.identity.json',
   JSON.stringify(unbindPlan),
 );
 check('解绑不替用户猜账号（不给就 bad-account）', buildUnbindPlan('bilibili', undefined, unbindConfig).code === 'bad-account');
@@ -733,7 +749,7 @@ check(
   unbindBadName.status === 200
     && unbindBadName.body.ok === false
     && unbindBadName.body.code === 'bad-account'
-    && fs.existsSync(path.join(unbindConfig, 'bilibili_main.txt')),
+    && fs.existsSync(path.join(unbindConfig, 'bilibili_main.json')),
   JSON.stringify(unbindBadName.body),
 );
 const unbindNoBody = await postJsonTo(unbindRoute, undefined);
@@ -742,11 +758,11 @@ const unbindOk = await postJsonTo(unbindRoute, { platform: 'bilibili', account: 
 check(
   'POST /unbind 只删那两份文件，别人的凭据原样还在',
   unbindOk.body.ok === true
-    && unbindOk.body.removed.join(',') === 'bilibili_main.txt,bilibili_main.identity.json'
+    && unbindOk.body.removed.join(',') === 'bilibili_main.json,bilibili_main.identity.json'
     && unbindOk.body.missing.length === 0
-    && !fs.existsSync(path.join(unbindConfig, 'bilibili_main.txt'))
+    && !fs.existsSync(path.join(unbindConfig, 'bilibili_main.json'))
     && !fs.existsSync(path.join(unbindConfig, 'bilibili_main.identity.json'))
-    && fs.existsSync(path.join(unbindConfig, 'bilibili_side.txt')),
+    && fs.existsSync(path.join(unbindConfig, 'bilibili_side.json')),
   JSON.stringify(unbindOk.body),
 );
 const unbindAgain = await postJsonTo(unbindRoute, { platform: 'bilibili', account: 'main' });
@@ -759,7 +775,7 @@ check(
 const decoyWs = path.join(dir, 'decoy-ws');
 const decoyConfig = path.join(decoyWs, 'config');
 fs.mkdirSync(decoyConfig, { recursive: true });
-fs.writeFileSync(path.join(decoyConfig, 'bilibili_main.txt'), 'mock-credential\n', 'utf8');
+fs.writeFileSync(path.join(decoyConfig, 'bilibili_main.json'), 'mock-credential\n', 'utf8');
 const blindRoute = routeOf(makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir }), 'unbind');
 const cwdBefore = process.cwd();
 let blindResult;
@@ -773,7 +789,7 @@ check(
   '没拿到工作区根就不删文件（不回落 cwd 猜 config/）',
   blindResult.body.ok === false
     && blindResult.body.code === 'no-workspace'
-    && fs.existsSync(path.join(decoyConfig, 'bilibili_main.txt')),
+    && fs.existsSync(path.join(decoyConfig, 'bilibili_main.json')),
   JSON.stringify(blindResult.body),
 );
 
@@ -790,7 +806,7 @@ check(
   [biliFetchPlan.ok && biliFetchPlan.plan.args.join(' '), xhsFetchPlan.ok && xhsFetchPlan.plan.args.join(' ')].join(' | '),
 );
 check('采集产出永远落在工作区 tmp/ 下', biliFetchPlan.ok && path.dirname(biliFetchPlan.plan.outFile) === path.join(unbindWs, 'tmp'));
-check('采集凭据路径按别名算', biliFetchPlan.ok && biliFetchPlan.plan.credentialFile === path.join(unbindWs, 'config', 'bilibili_main.txt'));
+check('采集凭据路径按别名算', biliFetchPlan.ok && biliFetchPlan.plan.credentialFile === path.join(unbindWs, 'config', 'bilibili_main.json'));
 check('采集计划不认穿越账号', buildFetchPlan('bilibili', '../x', { root: unbindWs }).code === 'bad-account');
 check('采集计划缺工作区根就报错（不猜目录）', buildFetchPlan('bilibili', 'main', {}).code === 'no-workspace');
 check('视频号采不了也导不进', buildFetchPlan('shipinhao', 'main', { root: unbindWs }).code === 'no-collector');
@@ -1137,7 +1153,7 @@ const multiWs = path.join(dir, 'multi-ws');
 fs.mkdirSync(path.join(multiWs, 'code'), { recursive: true });
 fs.mkdirSync(path.join(multiWs, 'config'), { recursive: true });
 fs.writeFileSync(path.join(multiWs, 'AGENTS.md'), '# mock workspace\n', 'utf8');
-for (const name of ['douyin_main.txt', 'douyin_xiao-2.txt', 'bilibili_main.txt']) {
+for (const name of ['douyin_main.json', 'douyin_xiao-2.json', 'bilibili_main.json']) {
   fs.writeFileSync(path.join(multiWs, 'config', name), 'mock-cookie-not-real\n', 'utf8');
 }
 const multiPayload = readPanel({ dataDir: panelDir, workspaceRoot: multiWs });
