@@ -20,7 +20,7 @@ import { describeBindings, formatSavedAt, parseCredentialName, bindingSteps } fr
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
-import { BRIDGE_PREFIX, listCredentialFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
+import { BRIDGE_PREFIX, boundAccountsOf, listCredentialFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 import { LOGIN_TIMEOUT_MS, LOGIN_TARGETS, buildLoginPlan, describeLoginState, extractQrPath, filterLoginLog, sanitizeAccount } from '../lib/login.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
@@ -410,7 +410,20 @@ check(
 );
 check('Host 侧耐心要长过脚本最长等待（300s）', LOGIN_TIMEOUT_MS > 300000, String(LOGIN_TIMEOUT_MS));
 check('账号名只收安全形状', sanitizeAccount('main') === 'main' && sanitizeAccount('xiao-hao_2') === 'xiao-hao_2', 'main / xiao-hao_2');
-const badAccountSamples = ['../x', 'a b', 'a;rm -rf', '', 'x'.repeat(33), '-lead', null, 42];
+// 与采集脚本同一条正则 ^[A-Za-z0-9_-]{1,32}$：_ / - 开头的账号脚本收得下，面板也必须收，
+// 否则「脚本能跑的账号」在面板上登不了（bili_sync.py:99 / douyin_sync.py:118 / xhs_sync.py:119）。
+check(
+  '下划线 / 连字符开头也收（脚本认的面板就认）',
+  sanitizeAccount('_x') === '_x' && sanitizeAccount('-x') === '-x' && sanitizeAccount('_') === '_' && sanitizeAccount('-') === '-',
+  JSON.stringify(['_x', '-x', '_', '-'].map((value) => sanitizeAccount(value))),
+);
+check('长度卡在 32 / 33', sanitizeAccount('m'.repeat(32)) === 'm'.repeat(32) && sanitizeAccount('m'.repeat(33)) === null, '32 / 33');
+check(
+  '登录计划收得下 _ / - 开头的账号（与脚本一致）',
+  buildLoginPlan('douyin', '_x')?.plan?.account === '_x' && buildLoginPlan('douyin', '-x')?.plan?.account === '-x',
+  JSON.stringify([buildLoginPlan('douyin', '_x')?.plan, buildLoginPlan('douyin', '-x')?.plan]),
+);
+const badAccountSamples = ['../x', 'a b', 'a;rm -rf', '', 'x'.repeat(33), null, 42, 'a/b', '主号', 'a.b'];
 const acceptedBadAccounts = badAccountSamples.filter((value) => sanitizeAccount(value) !== null);
 check('危险账号名一律拒收', acceptedBadAccounts.length === 0, JSON.stringify(acceptedBadAccounts));
 const biliPlan = buildLoginPlan('bilibili', 'main');
@@ -852,6 +865,91 @@ check(
   `${bigPanel.posts.length}/${bigPanel.postsTotal}`,
 );
 check('截断上限可以调', buildPanel(manyRows, { postLimit: 10 }).posts.length === 10 && buildPanel(manyRows, { postLimit: 10 }).truncated === true);
+
+// —— 多账号：绑了凭据但台账里还没采到数据的账号，也要有自己的切片（空报告），
+// 否则左栏点它 → reports[切片] 不存在 → 前端回落到 data.report（全部切片），看到的是别人号的数字。——
+const boundTree = buildPanel(treeRows, { boundAccounts: { douyin: ['main', 'xiao-2'], xhs: [], bilibili: ['main'] } });
+check(
+  '绑过但没数据的账号拿到空切片（total=0，同一套 buildReport）',
+  boundTree.reports['account:douyin|main'].total === 0
+    && boundTree.reports['account:douyin|main'].groupBy === 'kind'
+    && boundTree.reports['account:douyin|xiao-2'].total === 0
+    && boundTree.reports['account:bilibili|main'].total === 0,
+  Object.keys(boundTree.reports).join(','),
+);
+check(
+  '空切片不动已有切片、也不改筛选树（口径没变）',
+  boundTree.reports['account:douyin|mock-a'].total === 2
+    && boundTree.reports['account:douyin|mock-b'].total === 1
+    && boundTree.reports.all === boundTree.report && boundTree.report.total === 5
+    && boundTree.facets.platforms.map((item) => item.key).join(',') === 'douyin,xhs'
+    && boundTree.platforms.length === 4,
+  JSON.stringify(boundTree.facets.platforms),
+);
+const plainSliceKeys = Object.keys(tree.reports).join(',');
+check(
+  '不给 boundAccounts 时切片一个不多（回归）',
+  plainSliceKeys === 'all,platform:douyin,platform:xhs,platform:bilibili,platform:shipinhao,account:douyin|mock-a,account:douyin|mock-b'
+    && Object.keys(buildPanel(treeRows, { boundAccounts: {} }).reports).join(',') === plainSliceKeys
+    && Object.keys(buildPanel(treeRows, { boundAccounts: null }).reports).join(',') === plainSliceKeys,
+  plainSliceKeys,
+);
+const oddBound = buildPanel(treeRows, { boundAccounts: { shipinhao: ['main'], weibo: ['x', '', 'x'], douyin: ['main', 'main', ' '] } });
+check(
+  '陌生平台 / 重复账号 / 空名都不崩',
+  oddBound.reports['account:shipinhao|main'].total === 0
+    && oddBound.reports['account:weibo|x'].total === 0
+    && !('account:weibo|' in oddBound.reports)
+    && Object.keys(oddBound.reports).filter((key) => key.startsWith('account:douyin|')).length === 3
+    && oddBound.report.total === 5,
+  Object.keys(oddBound.reports).join(','),
+);
+check(
+  'boundAccounts 传怪值一律当没给',
+  [undefined, null, 0, 'douyin', [], { douyin: 'main' }].every((value) => {
+    const panel = buildPanel(treeRows, { boundAccounts: value });
+    return panel.report.total === 5 && Object.keys(panel.reports).join(',') === plainSliceKeys;
+  }),
+  'ok',
+);
+// —— 桥：账号名直接取同一个函数里已经算好的 bindings，不重复扫 config 目录 ——
+const multiWs = path.join(dir, 'multi-ws');
+fs.mkdirSync(path.join(multiWs, 'code'), { recursive: true });
+fs.mkdirSync(path.join(multiWs, 'config'), { recursive: true });
+fs.writeFileSync(path.join(multiWs, 'AGENTS.md'), '# mock workspace\n', 'utf8');
+for (const name of ['douyin_main.txt', 'douyin_xiao-2.txt', 'bilibili_main.txt']) {
+  fs.writeFileSync(path.join(multiWs, 'config', name), 'mock-cookie-not-real\n', 'utf8');
+}
+const multiPayload = readPanel({ dataDir: panelDir, workspaceRoot: multiWs });
+check(
+  '桥 payload 里「凭据有、台账无」的账号有空切片',
+  multiPayload.reports['account:douyin|main'].total === 0
+    && multiPayload.reports['account:douyin|xiao-2'].total === 0
+    && multiPayload.reports['account:bilibili|main'].total === 0
+    && multiPayload.reports['account:douyin|mock-main'].total === 1
+    && multiPayload.report.total === 2,
+  Object.keys(multiPayload.reports).join(','),
+);
+const bareWs = path.join(dir, 'bare-ws');
+fs.mkdirSync(path.join(bareWs, 'code'), { recursive: true });
+fs.writeFileSync(path.join(bareWs, 'AGENTS.md'), '# mock workspace\n', 'utf8');
+const barePayload = readPanel({ dataDir: panelDir, workspaceRoot: bareWs });
+check(
+  '没有凭据就一个空切片都不多（桥侧回归）',
+  barePayload.reports['account:douyin|mock-main'].total === 1
+    && !('account:douyin|main' in barePayload.reports)
+    && Object.keys(barePayload.reports).join(',') === 'all,platform:douyin,platform:xhs,platform:bilibili,platform:shipinhao,account:douyin|mock-main,account:xhs|mock-main',
+  Object.keys(barePayload.reports).join(','),
+);
+const boundNames = boundAccountsOf(multiPayload.bindings);
+check(
+  'boundAccountsOf 直接取 bindings 的账号名（不重扫目录）',
+  Object.keys(boundNames).join(',') === 'douyin,xhs,bilibili,shipinhao'
+    && boundNames.douyin.slice().sort().join(',') === 'main,xiao-2'
+    && boundNames.bilibili.join(',') === 'main'
+    && boundNames.xhs.length === 0 && boundNames.shipinhao.length === 0,
+  JSON.stringify(boundNames),
+);
 
 fs.rmSync(dir, { recursive: true, force: true });
 
