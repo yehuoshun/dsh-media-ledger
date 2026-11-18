@@ -38,6 +38,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | `lib/douyin.js` | 抖音采集产出的 JSON → 台账记录（同一套归一形状；差异全在**候选键回退链**与「粗值/缺值只记 warning 不写 0」） |
 | `lib/tool.js` | 工具定义：参数 schema、action 分发、错误收敛成 `{ ok:false, error }` |
 | `lib/panel.js` | 面板数据整形：`toPanelPost` / `buildFacets`（平台 → 账号两级树）/ `buildPanel`（每个切片一份 `buildReport`，**不另算一套指标**）/ `parseSlice` |
+| `lib/bindings.js` | 面板绑定状态：凭据文件名 → 平台/账号、有无采集脚本、空态三步文案（纯函数，只吃目录清单，不读凭据内容） |
 | `lib/bridge.js` | Host 侧面板桥：`GET /api/dsh-media-ledger/state`（面板数据）、`POST .../sidebar`（写开关）；`sidebarEnabled` / `readPanel` / `saveSidebar` |
 | `lib/client.js` | 浏览器侧 bundle：`window.__ModuleLoader__.load({ id: 'dsh-media-ledger', factory })`，注册 `sidebar.panellist`（图标「自媒体台账」）+ `main`（面板页）+ 命令 `media-ledger-sidebar` |
 | `lib/util.js` | `parseCount`（`2.4w` / `1.2万`）、`toLossless` |
@@ -67,7 +68,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 141/141**（含面板整形与筛选树、桥路由、客户端 bundle 契约与「真跑一遍 bundle」、B站/抖音/小红书 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、`import_xhs` 端到端、卸载后工具与桥路由都回收。
+- 期望：`smoke.mjs` → **全过 157/157**（含面板整形与筛选树、桥路由、客户端 bundle 契约与「真跑一遍 bundle」、B站/抖音/小红书 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、`import_xhs` 端到端、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 

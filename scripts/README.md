@@ -11,6 +11,12 @@ Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/<平台>-impor
 |---|---|---|---|
 | `bili_sync.py` | B站 | `import_bili` | `config/bilibili_<account>.txt` |
 | `xhs_sync.py` | 小红书 | `import_xhs` | `config/xhs_<account>.txt` |
+| `douyin_sync.py` | 抖音 | `import_douyin` | `config/douyin_<account>.txt` |
+
+**凭据文件名是脚本与面板共用的约定**：必须是 `config/<平台>_<账号>.txt`（视频号还没有脚本）。
+脚本按这个名字找文件，插件面板也按这个名字判断「这个平台绑没绑、什么时候绑的」——
+存成 `config/bilibili.txt`（少了 `_<账号>`）时，脚本会报「凭据文件不存在」，面板会一直显示「未绑定」。
+面板只看文件名与修改时间，**不读凭据内容**。
 
 两个脚本各自独立（没有共享的 utils 模块），只有小红书那套互相引用：`xhs_sync.py`（入口）→
 `xhs_login.py`（扫码）→ `xhs_browser.py`（起本机 Chrome，CDP 直通）。用法与退出码见下文。
