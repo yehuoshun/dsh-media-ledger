@@ -12,7 +12,8 @@
     fetch   拉取稿件列表 + 每个稿件的三份数据 + 实时互动数，产出 <工作区根>/tmp/bili-import.json
 
 约定：
-    - 只用标准库 + qrcode/pillow（后者只在 login 里用，懒加载，fetch 不付它的导入开销）；
+    - 只用标准库；sign 之外唯一的可选依赖是 qrcode/pillow（只在 login 里懒加载，用来把二维码
+      渲染成 PNG）。没装它们也能登：login 会退回用浏览器打开同一个扫码地址，fetch 完全不付这个开销；
     - cookie 值永不打印，只打印字段名与长度；
     - 工作区根从本文件向上找「同层既有 AGENTS.md 又有 code/」的目录，代码里不写死盘符路径；
     - 缺失字段写 null，不写 0 冒充；降级情况记进输出 JSON 的 warnings。
@@ -36,6 +37,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -431,9 +433,19 @@ def cmd_login(args) -> int:
 
     # 2) 落盘 + 打印路径与 URL（URL 本身就是二维码内容，可以打）
     image_path = qr_image_path(account)
-    _render_qr_image(qr_url, image_path)
     print("请用 B站手机客户端扫码登录：")
-    print(f"  二维码图片：{image_path}")
+    try:
+        _render_qr_image(qr_url, image_path)
+        printed_image = True
+    except ModuleNotFoundError:
+        # 没装 qrcode/pillow：不为登一次录装第三方包。同一个地址用浏览器打开就是同一张二维码，
+        # 本脚本照样轮询 qrcode_key 等手机端确认（面板点「扫码登录」走的就是这条退路）。
+        printed_image = False
+        webbrowser.open(qr_url)
+    if printed_image:
+        print(f"  二维码图片：{image_path}")
+    else:
+        print("  没装 qrcode/pillow，已用浏览器打开扫码页（想生成 PNG：python -m pip install qrcode pillow）")
     print(f"  二维码内容：{qr_url}")
     print(f"  最长等待 {int(POLL_TIMEOUT)} 秒，每 {int(POLL_INTERVAL)} 秒查询一次状态", flush=True)
 
