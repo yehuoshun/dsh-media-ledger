@@ -1,6 +1,6 @@
 {
   "name": "dsh-media-ledger",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "description": "四平台（抖音/小红书/B站/视频号）作品台账与数据复盘：一次报数一行、取最新快照、按 T+ 龄期对比、生成发布包。不做上传自动化。",
   "type": "module",

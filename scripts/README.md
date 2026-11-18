@@ -90,8 +90,8 @@ python scripts/bili_sync.py login --account work
    （默认 300）。进度行每 10 秒打一次「已等 N/M 秒（bilibili.com 域已有 cookie K 个）」；
    超时退出码 `4`，重跑一次 `login` 即可。窗口关早了也一样：脚本会告诉你等了多久、手里有哪些 cookie。
 4. 成功后缺 `buvid3`/`buvid4` 就补一次 `finger/spi`（缺了这两个，部分接口会当匿名请求），
-   把 cookie 序列化成一行 `k=v; k=v` 写进 `<工作区根>\config\bilibili_<account>.txt`
-   （UTF-8、无 BOM、无换行结尾），最后调 `nav` 接口验证 `isLogin == true`，
+   把 cookie 写成 JSON 对象存进 `<工作区根>\config\bilibili_<account>.txt`
+   （UTF-8、无 BOM、缩进 2、以换行结尾），最后调 `nav` 接口验证 `isLogin == true`，
    打印 `昵称(mid)` 与 `level` 后返回 0。
 5. 顺手把这次 `nav` 校验到的身份写进 `<工作区根>\config\bilibili_<account>.identity.json`
    （`{platform, account, uname, mid, level, saved_at}`，UTF-8、缩进 2），写不进去只打一行警告、
@@ -111,11 +111,22 @@ H5 页**（`account.bilibili.com/h5/account-h5/auth/scan-web?...`），桌面浏
 **cookie 值永远不会打印**：终端里只出现字段名和长度，例如 `SESSDATA(len=222)，bili_jct(len=32)，…`。
 要判断「是不是过期了 / 字段全不全」，看这串名字和长度就够了。
 
-凭据文件长这样（一行，7 个固定字段在前，其余按字段名排序追加）：
+凭据文件是 **`txt` 里放一个 JSON 对象**（0.5.6 起，四个平台统一这一套；字段顺序仍是 7 个固定字段在前，
+其余按字段名排序追加。下面的 `…` 是真实 cookie 值，这里只是不写出来）：
 
+```json
+{
+  "SESSDATA": "…",
+  "bili_jct": "…",
+  "DedeUserID": "…",
+  "DedeUserID__ckMd5": "…",
+  "sid": "…",
+  "buvid3": "…",
+  "buvid4": "…"
+}
 ```
-SESSDATA=…; bili_jct=…; DedeUserID=…; DedeUserID__ckMd5=…; sid=…; buvid3=…; buvid4=…
-```
+
+> 旧格式（一行 `k=v; k=v`）的文件**仍然能读**，只是新登录不再写出这种格式——换格式不会让你重扫一次码。
 
 > 凭据放在**工作区根的 `config/`**，不在这个 git 仓库里；不要把它复制进仓库、贴进 issue 或提交信息。
 
@@ -276,6 +287,9 @@ media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
 | `--keep-workbook` | 保留下载的 xlsx |
 | `--timeout` | 等下载的超时秒数（默认 120） |
 
+> 凭据文件 `config\xhs_<账号>.txt` 从 0.5.6 起是 **JSON 对象**（缩进 2、UTF-8 无 BOM、以换行结尾，
+> 与 B站/抖音同一套）；旧的一行 `k=v; k=v` 仍能读，不用重扫。
+
 ### 口径（和 B站 不一样的地方）
 
 - **观看量不是曝光量**：`play` 只取「观看量」，「曝光」进 `extras.impressions`。导出把两列都给了，别混。
@@ -309,7 +323,7 @@ media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
 |---|---|---|
 | 登录 | **拉起本机 Chrome/Edge** 打开官方登录页，你在窗口里扫码，脚本通过 CDP 轮询 cookie（`--qr` 才走纯 HTTP + PNG） | **拉起本机 Chrome/Edge**，你在窗口里扫码，脚本通过 CDP 轮询状态 |
 | 第三方依赖 | 默认**无**；只有 `login --qr` 要 `qrcode` + `pillow` | **无**，纯标准库（CDP 用的 WebSocket 是手写的） |
-| 凭据文件 | `config\bilibili_<account>.txt`，一行 `k=v; k=v` | `config\douyin_<account>.txt`，JSON 对象 |
+| 凭据文件 | `config\bilibili_<account>.txt`，JSON 对象（旧单行仍能读） | `config\douyin_<account>.txt`，JSON 对象 |
 | `fetch` 默认产物 | `tmp\bili-import.json` | `tmp\douyin-import.json` |
 | 采集方式 | 每稿 3 个接口（实时/结算/画像） | 列表 + 按批详情，指标只有一份 |
 

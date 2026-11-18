@@ -283,6 +283,7 @@ $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自�
 ## 状态
 
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
+- 凭据文件统一 JSON（0.5.6）：B站/小红书/抖音三个采集脚本现在都写「一个 JSON 对象」（`config/<平台>_<账号>.txt`，缩进 2、UTF-8 无 BOM、以换行结尾），旧的一行 `k=v; k=v` 仍能读，所以升级后不用重扫码。B站 `save_credential` 收键值对、`load_credential` 返回 `(cookie 头, 键值对)`，小红书 `save_cookie_line` 同样改写 JSON。
 - 绑定显示真实昵称（0.5.5）：B站 `login` 验证通过后把身份写进 `config/bilibili_<账号>.identity.json`（只有 `uname`/`mid`/`level`，无 cookie），面板读它把账号显示成「main（昵称）」——左栏「已绑定·无数据」的账号、登录框里的快捷标签都带昵称。文件缺了不影响任何功能，只是少一个别名。
 - B站扫码登录改走浏览器（0.5.4）：`login` 默认拉起本机 Chrome/Edge 打开 `https://passport.bilibili.com/login`（页面自己渲染二维码），脚本用 CDP 每 2 秒轮询 `bilibili.com` 域的 cookie，等 `SESSDATA` 落袋后补 `buvid3`/`buvid4`、落盘、`nav` 验证；纯 HTTP 二维码 PNG 降为退路 `--qr`（要 `qrcode`+`pillow`）。同版本修掉面板日志乱码（spawn 时强制 `PYTHONIOENCODING=utf-8`/`PYTHONUTF8=1`）。
 - 面板支持多账号（0.5.3）：登录按钮的账号可填可切（默认 `main`，规则 `^[A-Za-z0-9_-]{1,32}$`），一个平台能绑多个账号；左栏「平台 → 账号」两级树里连「已绑但还没有作品」的账号也列出来，点进去是空态而不是串到全部切片。台账与复盘的多账号口径本来就有（`post.account` + `--group-by account`）。
