@@ -16,11 +16,11 @@ import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 import { buildPanel, parseSlice, platformList, POST_LIMIT } from '../lib/panel.js';
-import { describeBindings, formatSavedAt, parseCredentialName, bindingSteps } from '../lib/bindings.js';
+import { describeBindings, formatSavedAt, identityFileOf, parseCredentialName, bindingSteps } from '../lib/bindings.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
-import { BRIDGE_PREFIX, boundAccountsOf, listCredentialFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
+import { BRIDGE_PREFIX, boundAccountsOf, listCredentialFiles, listIdentityFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 import { LOGIN_TIMEOUT_MS, LOGIN_TARGETS, buildLoginPlan, describeLoginState, extractQrPath, filterLoginLog, loginSpawnEnv, sanitizeAccount } from '../lib/login.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
@@ -388,6 +388,42 @@ check(
   bindingList[3].status === 'no-collector' && bindingList[3].credentials.length === 0 && bindingList[3].steps.length === 2,
   JSON.stringify(bindingList[3]),
 );
+// —— 身份旁路文件：别名（main）说得出「这其实是哪个号」——
+check(
+  '身份文件名跟着凭据文件走',
+  identityFileOf('bilibili_main.txt') === 'bilibili_main.identity.json'
+    && identityFileOf('bilibili_小号.txt') === 'bilibili_小号.identity.json'
+    && identityFileOf('notes.md') === '',
+  [identityFileOf('bilibili_main.txt'), identityFileOf('notes.md')].join(','),
+);
+const identityAware = describeBindings(
+  [{ name: 'bilibili_main.txt', mtimeMs: nowStamp }],
+  [{ name: 'bilibili_main.identity.json', uname: 'mock-uname', mid: '10001' }],
+).platforms[2];
+check(
+  '有身份就说得出昵称（绑定文案 + credentials 都带）',
+  identityAware.credentials[0].identity.uname === 'mock-uname'
+    && identityAware.credentials[0].identity.mid === '10001'
+    && identityAware.statusText.includes('main（mock-uname）'),
+  JSON.stringify(identityAware),
+);
+check(
+  '身份缺字段就当没有（不往文案里塞空括号）',
+  describeBindings(
+    [{ name: 'bilibili_main.txt', mtimeMs: nowStamp }],
+    [{ name: 'bilibili_main.identity.json', uname: '', mid: '' }],
+  ).platforms[2].credentials[0].identity === null
+    && describeBindings([{ name: 'bilibili_main.txt', mtimeMs: nowStamp }]).platforms[2].credentials[0].identity === null,
+  'ok',
+);
+check(
+  '身份文件对不上任何凭据时不影响别的平台',
+  describeBindings(
+    [{ name: 'douyin_main.txt', mtimeMs: nowStamp }],
+    [{ name: 'bilibili_main.identity.json', uname: 'mock-uname', mid: '10001' }],
+  ).platforms[0].credentials[0].identity === null,
+  'ok',
+);
 check(
   '桥的 payload 带筛选树与切片复盘',
   panelPayload.facets && panelPayload.facets.total === 2
@@ -525,6 +561,22 @@ check(
     && Object.keys(creds.entries[0]).sort().join(',') === 'mtimeMs,name',
   JSON.stringify(creds),
 );
+// 登录脚本写下的身份旁路文件：面板读它说得出昵称，但读的绝不是凭据
+fs.writeFileSync(
+  path.join(wsDir, 'config', 'douyin_main.identity.json'),
+  JSON.stringify({ platform: 'douyin', account: 'main', uname: 'mock-uname', mid: '10001', saved_at: '2026-11-18T12:00:00+08:00' }),
+  'utf8',
+);
+fs.writeFileSync(path.join(wsDir, 'config', 'broken.identity.json'), '{ not json', 'utf8');
+const identityFiles = listIdentityFiles({ workspaceRoot: wsDir });
+check(
+  '扫身份旁路文件：认得 uname/mid，坏 JSON 直接跳过',
+  identityFiles.length === 1
+    && identityFiles[0].name === 'douyin_main.identity.json'
+    && identityFiles[0].uname === 'mock-uname'
+    && identityFiles[0].mid === '10001',
+  JSON.stringify(identityFiles),
+);
 const boundPayload = readPanel({ dataDir: panelDir, workspaceRoot: wsDir });
 check(
   '桥的 payload 带绑定状态',
@@ -532,6 +584,7 @@ check(
     && boundPayload.bindings.configDir === path.join(wsDir, 'config')
     && boundPayload.bindings.platforms.length === 4
     && boundPayload.bindings.platforms[0].status === 'ready'
+    && boundPayload.bindings.platforms[0].statusText.includes('main（mock-uname）')
     && boundPayload.platforms.length === 4,
   JSON.stringify(boundPayload.bindings),
 );
