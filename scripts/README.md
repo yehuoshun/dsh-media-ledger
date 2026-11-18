@@ -31,10 +31,10 @@ Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/<平台>-impor
 2. **插件本体也不得起进程——只有一个例外：登录**（2026-11-18 用户批准，别的都别想）：
    `lib/bridge.js` 里允许 `spawn` 一次 `scripts/` 下的白名单登录脚本，条件卡得很死——
    平台只认 `bilibili` / `douyin` / `xhs`（各自映射到一个固定脚本）、只跑 `login` 子命令、
-   账号名走 `^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`（默认 `main`）、参数进数组而不是 shell 字符串、
+   账号名走 `^[A-Za-z0-9_-]{1,32}$`（与脚本一致；省略时按 `main`；一个平台可以绑多个账号）、参数进数组而不是 shell 字符串、
    `shell` 永不开、330 秒超时（脚本自己等扫码最长 300 秒——抖音默认 180，桥多留一截收尾）、同一时刻只允许一个登录任务、插件 dispose 时 kill；
    `lib/` 其他文件与 `index.js` 仍然零 `child_process`。
-   **面板上那个「扫码登录」按钮执行的就是 `python scripts/bili_sync.py login --account main`**
+   **面板上那个「扫码登录」按钮执行的就是 `python scripts/bili_sync.py login --account <你在面板里填的账号>`（默认 `main`；一个平台可以登多个账号，各占一份 `<平台>_<账号>.txt`）**
    （抖音、小红书把脚本名换掉）。想手工复现照着敲即可，两边看到的报错也是同一份。
    `test/smoke.mjs` 用三组断言守着这条例外不被扩大：`bridge.js` 之外零命中、`spawn` 全仓库只出现一次、`shell: true` 零命中。
 3. **抓取必须联网**：B站没有可用的开放数据接口，只能带 cookie 打创作中心的内部接口。
@@ -70,7 +70,7 @@ python -m pip install qrcode pillow
 
 ## login：扫码登录
 
-> 面板上的「扫码登录」按钮跑的就是本节第一条命令（`login --account main`），和你自己在命令行敲等价；出问题时两边看到的报错也是同一份。
+> 面板上的「扫码登录」按钮跑的就是本节第一条命令（`login --account <账号>`，默认 `main`），和你自己在命令行敲等价；出问题时两边看到的报错也是同一份。
 
 ```
 python scripts/bili_sync.py login

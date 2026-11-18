@@ -22,7 +22,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 
 **面板已经存在**（2026-11-18，用户点名要左侧栏入口 + 开关；同日又按用户要求改成「左导航 + 右内容」）：左侧栏图标「自媒体台账」→ 主区左栏切视图（台账 / 复盘）与筛选（平台 → 账号两级树），右栏只看当前切片；页内一个「在左侧栏显示」开关。视图与筛选都是浏览器里的 `useState`，**不改地址、不新增路由**；每个切片的复盘由 Host 用同一套 `buildReport` 算好，前端不自己算指标。**不要自己扩成独立页面体系**：不加路由、不加第二个面板、不做图表库；要加内容先问用户——这是本项目被纠正过两次的地方（用户原话：「回滚，你都没问我」「我问你的是dsh插件，你在做什么？」）。
 
-**登录也收进了面板（0.5.2 的窄例外）**：平台未绑定时，空态里与右栏顶部提示条上各有一个「扫码登录」按钮——Host 起一次白名单 `spawn` 跑对应脚本的 `login` 子命令（B站 `scripts/bili_sync.py login`、抖音 `scripts/douyin_sync.py login`、小红书 `scripts/xhs_sync.py login`），浏览器窗口由用户自己扫码，凭据落到 `config/<平台>_<账号>.txt`（账号名固定 `main`，面板不放输入框），轮询到成功后面板自己把标签翻成「已绑定」。视频号没有采集脚本，那个位置改成一句说明文字。这是 §5 里「不起进程」的唯一例外，**不要**把它长成通用命令执行器。
+**登录也收进了面板（0.5.2 的窄例外）**：平台未绑定时，空态里与右栏顶部提示条上各有一个「扫码登录」按钮——Host 起一次白名单 `spawn` 跑对应脚本的 `login` 子命令（B站 `scripts/bili_sync.py login`、抖音 `scripts/douyin_sync.py login`、小红书 `scripts/xhs_sync.py login`），浏览器窗口由用户自己扫码，凭据落到 `config/<平台>_<账号>.txt`（**账号可选**：默认 `main`，登录前能在按钮旁填别的名字、也能一键切到已绑过的账号；名字必须与三个脚本一致，即 `^[A-Za-z0-9_-]{1,32}$`——脚本本身不收中文），轮询到成功后面板自己把标签翻成「已绑定」。一个平台可以绑多个账号，左栏「平台 → 账号」两级树里连「已绑但台账还没数据」的账号也会出现（点进去是空态，不会串到别的切片）。视频号没有采集脚本，那个位置改成一句说明文字。这是 §5 里「不起进程」的唯一例外，**不要**把它长成通用命令执行器。
 
 ---
 
@@ -120,7 +120,7 @@ plugin_manager install_bundle(target="<本仓库目录>")
 ## 6. 代码约定
 
 - `lib/` 只放**纯函数**：不做 IO、不读环境、不联网，方便在 `smoke.mjs` 里直接测。例外只有三个，别扩大到别的文件：`store.js`（读写 JSONL）、`tool.js`（工具 IO 收敛）、`bridge.js`（Host 侧四条本机路由的读写 + 登录那一次 `spawn`）；`client.js` 是浏览器 bundle，跑在页面里，不参与 Node 侧纯函数规则。
-- `lib/bridge.js` 的路由**只部署在宿主自己的 webServer 上**，不 import `node:http`、不向外发请求；面板要的数据只能从这四条路由出，不要为了少写一个字段去开第五条。`POST /sidebar` 的请求体只认 `{"value": true|false}`；`POST /login` 只认 `{"platform": "bilibili"|"douyin"|"xhs", "account": "main"}`，`platform` 走白名单（视频号没有脚本，直接回 `no-collector`），`account` 走 `^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`；`GET /login/state` 不收任何参数。别把入参反射成路径、文件名或命令参数——`spawn` 的命令与参数写死在白名单里，`shell` 永不开。
+- `lib/bridge.js` 的路由**只部署在宿主自己的 webServer 上**，不 import `node:http`、不向外发请求；面板要的数据只能从这四条路由出，不要为了少写一个字段去开第五条。`POST /sidebar` 的请求体只认 `{"value": true|false}`；`POST /login` 只认 `{"platform": "bilibili"|"douyin"|"xhs", "account": "<账号名>"}`（`account` 可省，省了按 `main`），`platform` 走白名单（视频号没有脚本，直接回 `no-collector`），`account` 走 `^[A-Za-z0-9_-]{1,32}$`（与三个 Python 脚本的正则完全相同，中文别名脚本自己就不收）；`GET /login/state` 不收任何参数。别把入参反射成路径、文件名或命令参数——`spawn` 的命令与参数写死在白名单里，`shell` 永不开。
 - 工具错误统一 `return { ok: false, error: '…' }`，**不要 throw**（throw 会让整个工具调用失败，用户看不到可读原因）。
 - 工具参数 `additionalProperties: false`、`required: ['action']`、action 用枚举。新增 action 要一次改齐四处：`lib/tool.js` 的枚举与分发、参数键、`locale/{zh,en}.json` 的描述、`test/smoke.mjs` 或 `test/activate.mjs` 的断言。
 - 数字口径不要随手改，改了必须在提交信息里写清为什么，并同步改断言：互动率**分子分母取同一批行**且只算 `play > 0`；快照取 `captured_at` 真正最新的那条（不是文件里最后一行）；T+ 龄期现算而不是信上报值。
