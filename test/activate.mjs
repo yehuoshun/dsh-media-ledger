@@ -57,8 +57,8 @@ console.log(`name=${name} inject=${JSON.stringify(inject)} 工具名=${tool.name
 console.log(`桥路由 → ${bridgeRoutes.map((route) => route.path).join(', ')}`);
 const bridgeCount = bridgeRoutes.length;
 const bridgePaths = bridgeRoutes.map((route) => route.path);
-const loginRoutesOk = bridgePaths.join(',') === '/api/dsh-media-ledger/state,/api/dsh-media-ledger/sidebar,/api/dsh-media-ledger/login,/api/dsh-media-ledger/login/state';
-console.log(`桥路由数 → ${bridgeCount}${loginRoutesOk ? ' ✓' : ` ✗ ${bridgePaths.join(',')}`}`);
+const routesOk = bridgePaths.join(',') === '/api/dsh-media-ledger/state,/api/dsh-media-ledger/sidebar,/api/dsh-media-ledger/login,/api/dsh-media-ledger/login/state,/api/dsh-media-ledger/unbind,/api/dsh-media-ledger/fetch,/api/dsh-media-ledger/fetch/state';
+console.log(`桥路由数 → ${bridgeCount}${routesOk ? ' ✓' : ` ✗ ${bridgePaths.join(',')}`}`);
 
 const add = await tool.execute({ action: 'add_post', platform: '抖音', account: '主号', kind: '图文tag', title: '五盾军团23人穿7号致敬C罗', published_at: '2026-11-14 20:00' });
 console.log('add_post →', JSON.stringify(add.added));
@@ -173,7 +173,34 @@ if (loginStateRoute) loginStateRoute.handler({ method: 'GET' }, loginStateProbe)
 const loginStateBody = loginStateProbe.body ? JSON.parse(loginStateProbe.body) : {};
 const loginIdleOk = loginStateBody.ok === true && Boolean(loginStateBody.login) && loginStateBody.login.phase === 'idle';
 const stateLoginOk = Boolean(panelPayload.login) && panelPayload.login.phase === 'idle';
-console.log(`扫码登录 → 路由两条 ${loginRoutesOk ? '✓' : '✗'} / GET login 405 ${loginMethodOk ? '✓' : '✗'} / 坏平台 ${loginBadOk ? loginBadBody.code : '✗ ' + loginBadRes.body} / state.login ${stateLoginOk && loginIdleOk ? 'idle ✓' : '✗'}`);
+console.log(`扫码登录 → 路由两条 ${routesOk ? '✓' : '✗'} / GET login 405 ${loginMethodOk ? '✓' : '✗'} / 坏平台 ${loginBadOk ? loginBadBody.code : '✗ ' + loginBadRes.body} / state.login ${stateLoginOk && loginIdleOk ? 'idle ✓' : '✗'}`);
+
+// 解绑与采集：只探「坏输入被拦住」——activate 用的是真工作区，绝不在这里真删凭据、真起脚本
+const postTo = async (route, payload) => {
+  const res = makeRes();
+  await route.handler({
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler(JSON.stringify(payload));
+      if (event === 'end') handler();
+    },
+  }, res);
+  return { status: res.statusCode, body: res.body ? JSON.parse(res.body) : {} };
+};
+const unbindRoute = bridgeRoutes.find((route) => route.path === '/api/dsh-media-ledger/unbind');
+const fetchRoute = bridgeRoutes.find((route) => route.path === '/api/dsh-media-ledger/fetch');
+const fetchStateRoute = bridgeRoutes.find((route) => route.path === '/api/dsh-media-ledger/fetch/state');
+const unbindGetRes = makeRes();
+if (unbindRoute) unbindRoute.handler({ method: 'GET' }, unbindGetRes);
+const unbindBadName = unbindRoute ? await postTo(unbindRoute, { platform: 'bilibili', account: '../etc' }) : { status: 0, body: {} };
+const fetchBadPlatform = fetchRoute ? await postTo(fetchRoute, { platform: 'nope', account: 'main' }) : { status: 0, body: {} };
+const fetchStateProbe = makeRes();
+if (fetchStateRoute) fetchStateRoute.handler({ method: 'GET' }, fetchStateProbe);
+const fetchStateBody = fetchStateProbe.body ? JSON.parse(fetchStateProbe.body) : {};
+const unbindOk = unbindGetRes.statusCode === 405 && unbindBadName.body.code === 'bad-account';
+const fetchOk = fetchBadPlatform.body.code === 'bad-platform'
+  && fetchStateBody.ok === true && Boolean(fetchStateBody.fetch) && fetchStateBody.fetch.phase === 'idle';
+console.log(`解绑/采集 → 路由三条 ${unbindRoute && fetchRoute && fetchStateRoute ? '✓' : '✗'} / GET unbind 405 ${unbindGetRes.statusCode === 405 ? '✓' : '✗ ' + unbindGetRes.statusCode} / 坏账号 ${unbindOk ? 'bad-account ✓' : '✗ ' + unbindBadName.body.error} / 坏平台 ${fetchOk ? 'bad-platform ✓' : '✗ ' + fetchBadPlatform.body.error} / fetch.state idle ${fetchStateBody.fetch && fetchStateBody.fetch.phase === 'idle' ? '✓' : '✗'}`);
 
 
 // import_xhs：走 tool.execute，验 action 分发 + 建档 + 快照落盘（放在面板断言之后，免得改动切片数量）
@@ -206,12 +233,14 @@ const ok = report.groups.length === 1
   && list.total === 1
   && badId.ok === false && badAction.ok === false && badCount.ok === false
   && !serialized.includes('undefined')
-  && bridgeCount === 4
-  && loginRoutesOk
+  && bridgeCount === 7
+  && routesOk
   && loginMethodOk
   && loginBadOk
   && loginIdleOk
   && stateLoginOk
+  && unbindOk
+  && fetchOk
   && hintOk
   && shapeOk
   && importOk;

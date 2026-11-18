@@ -16,12 +16,13 @@ import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 import { buildPanel, parseSlice, platformList, POST_LIMIT } from '../lib/panel.js';
-import { describeBindings, formatSavedAt, identityFileOf, parseCredentialName, bindingSteps } from '../lib/bindings.js';
+import { buildUnbindPlan, describeBindings, formatSavedAt, identityFileOf, parseCredentialName, bindingSteps } from '../lib/bindings.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
 import { BRIDGE_PREFIX, boundAccountsOf, listCredentialFiles, listIdentityFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 import { LOGIN_TIMEOUT_MS, LOGIN_TARGETS, buildLoginPlan, describeLoginState, extractQrPath, filterLoginLog, loginSpawnEnv, sanitizeAccount } from '../lib/login.js';
+import { FETCH_MAX, FETCH_TIMEOUT_MS, buildFetchPlan, countsOf, describeFetchState } from '../lib/fetch.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -513,10 +514,10 @@ check('loginSpawnEnv 空入参也不炸', loginSpawnEnv().PYTHONIOENCODING === '
 check('log 只留尾部 2000 字符', describeLoginState({ phase: 'failed', log: 'x'.repeat(5000) }).log.length === 2000, String(describeLoginState({ phase: 'failed', log: 'x'.repeat(5000) }).log.length));
 
 const routes = makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir });
-check('桥只开四条路由', routes.length === 4 && routes.every((route) => route.kind === 'exact' && route.path.startsWith(BRIDGE_PREFIX)), routes.map((r) => r.path).join(','));
+check('桥只开七条路由', routes.length === 7 && routes.every((route) => route.kind === 'exact' && route.path.startsWith(BRIDGE_PREFIX)), routes.map((r) => r.path).join(','));
 check(
   '桥路由名对得上客户端',
-  routes.map((route) => route.path).join(',') === `${BRIDGE_PREFIX}/state,${BRIDGE_PREFIX}/sidebar,${BRIDGE_PREFIX}/login,${BRIDGE_PREFIX}/login/state`,
+  routes.map((route) => route.path).join(',') === `${BRIDGE_PREFIX}/state,${BRIDGE_PREFIX}/sidebar,${BRIDGE_PREFIX}/login,${BRIDGE_PREFIX}/login/state,${BRIDGE_PREFIX}/unbind,${BRIDGE_PREFIX}/fetch,${BRIDGE_PREFIX}/fetch/state`,
   routes.map((route) => route.path).join(','),
 );
 const fakeRes = () => {
@@ -680,6 +681,158 @@ const loginStateWrongRes = fakeRes();
 routes[3].handler({ method: 'POST' }, loginStateWrongRes);
 check('GET /login/state 拒绝别的 method', loginStateWrongRes.statusCode === 405, String(loginStateWrongRes.statusCode));
 
+// —— 解绑与采集：一条会删文件、一条会起脚本，都得先证明「坏输入进不来、路径不由请求决定」 ——
+const unbindWs = path.join(dir, 'unbind-ws');
+const unbindConfig = path.join(unbindWs, 'config');
+fs.mkdirSync(unbindConfig, { recursive: true });
+fs.writeFileSync(path.join(unbindConfig, 'bilibili_main.txt'), 'mock-credential\n', 'utf8');
+fs.writeFileSync(path.join(unbindConfig, 'bilibili_main.identity.json'), '{"uname":"mock-uname"}\n', 'utf8');
+fs.writeFileSync(path.join(unbindConfig, 'bilibili_side.txt'), 'mock-credential-2\n', 'utf8');
+const unbindPlan = buildUnbindPlan('bilibili', 'main', unbindConfig);
+check(
+  '解绑计划只算「凭据 + 身份」两个文件',
+  unbindPlan.ok === true
+    && unbindPlan.plan.dir === path.resolve(unbindConfig)
+    && unbindPlan.plan.files.map((item) => item.name).join(',') === 'bilibili_main.txt,bilibili_main.identity.json',
+  JSON.stringify(unbindPlan),
+);
+check('解绑不替用户猜账号（不给就 bad-account）', buildUnbindPlan('bilibili', undefined, unbindConfig).code === 'bad-account');
+check('解绑挡住穿越型账号名', buildUnbindPlan('bilibili', '../etc', unbindConfig).code === 'bad-account');
+check('解绑挡住不认识的平台', buildUnbindPlan('nope', 'main', unbindConfig).code === 'bad-platform');
+check('解绑挡没有采集脚本的平台（视频号）', buildUnbindPlan('shipinhao', 'main', unbindConfig).code === 'no-collector');
+
+const unbindRoutes = makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir, workspaceRoot: unbindWs });
+const routeOf = (table, name) => table.find((route) => route.path === BRIDGE_PREFIX + '/' + name);
+const unbindRoute = routeOf(unbindRoutes, 'unbind');
+const fetchRoute = routeOf(unbindRoutes, 'fetch');
+const fetchStateRoute = routeOf(unbindRoutes, 'fetch/state');
+const postJsonTo = async (route, payload) => {
+  const res = fakeRes();
+  const text = payload === undefined ? undefined : typeof payload === 'string' ? payload : JSON.stringify(payload);
+  await route.handler(
+    {
+      method: 'POST',
+      on: (event, handler) => {
+        if (event === 'data' && text !== undefined) handler(text);
+        if (event === 'end') handler();
+      },
+    },
+    res,
+  );
+  return { status: res.statusCode, body: JSON.parse(res.body || '{}') };
+};
+const unbindGetRes = fakeRes();
+unbindRoute.handler({ method: 'GET' }, unbindGetRes);
+check('GET /unbind 只认 POST', unbindGetRes.statusCode === 405, String(unbindGetRes.statusCode));
+const unbindBadName = await postJsonTo(unbindRoute, { platform: 'bilibili', account: '../etc' });
+check(
+  'POST /unbind 坏账号名 → bad-account，且一个文件都没删',
+  unbindBadName.status === 200
+    && unbindBadName.body.ok === false
+    && unbindBadName.body.code === 'bad-account'
+    && fs.existsSync(path.join(unbindConfig, 'bilibili_main.txt')),
+  JSON.stringify(unbindBadName.body),
+);
+const unbindNoBody = await postJsonTo(unbindRoute, undefined);
+check('POST /unbind 空请求体 → 400 bad-request', unbindNoBody.status === 400 && unbindNoBody.body.code === 'bad-request', JSON.stringify(unbindNoBody.body));
+const unbindOk = await postJsonTo(unbindRoute, { platform: 'bilibili', account: 'main' });
+check(
+  'POST /unbind 只删那两份文件，别人的凭据原样还在',
+  unbindOk.body.ok === true
+    && unbindOk.body.removed.join(',') === 'bilibili_main.txt,bilibili_main.identity.json'
+    && unbindOk.body.missing.length === 0
+    && !fs.existsSync(path.join(unbindConfig, 'bilibili_main.txt'))
+    && !fs.existsSync(path.join(unbindConfig, 'bilibili_main.identity.json'))
+    && fs.existsSync(path.join(unbindConfig, 'bilibili_side.txt')),
+  JSON.stringify(unbindOk.body),
+);
+const unbindAgain = await postJsonTo(unbindRoute, { platform: 'bilibili', account: 'main' });
+check(
+  '再解绑一次是幂等的：removed 空、missing 两条',
+  unbindAgain.body.ok === true && unbindAgain.body.removed.length === 0 && unbindAgain.body.missing.length === 2,
+  JSON.stringify(unbindAgain.body),
+);
+// 回归：面板没拿到工作区根时绝不能回落 cwd 去删「碰巧在那儿」的 config/（曾真的删掉过真实凭据）
+const decoyWs = path.join(dir, 'decoy-ws');
+const decoyConfig = path.join(decoyWs, 'config');
+fs.mkdirSync(decoyConfig, { recursive: true });
+fs.writeFileSync(path.join(decoyConfig, 'bilibili_main.txt'), 'mock-credential\n', 'utf8');
+const blindRoute = routeOf(makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir }), 'unbind');
+const cwdBefore = process.cwd();
+let blindResult;
+try {
+  process.chdir(decoyWs);
+  blindResult = await postJsonTo(blindRoute, { platform: 'bilibili', account: 'main' });
+} finally {
+  process.chdir(cwdBefore);
+}
+check(
+  '没拿到工作区根就不删文件（不回落 cwd 猜 config/）',
+  blindResult.body.ok === false
+    && blindResult.body.code === 'no-workspace'
+    && fs.existsSync(path.join(decoyConfig, 'bilibili_main.txt')),
+  JSON.stringify(blindResult.body),
+);
+
+// 采集计划：脚本、argv、产出文件全由 Host 算，请求里只带平台与账号
+const biliFetchPlan = buildFetchPlan('bilibili', 'main', { root: unbindWs });
+const dyFetchPlan = buildFetchPlan('douyin', 'main', { root: unbindWs });
+const xhsFetchPlan = buildFetchPlan('xhs', 'main', { root: unbindWs });
+const outOf = (platform) => path.join(unbindWs, 'tmp', 'panel-fetch-' + platform + '-main.json');
+check(
+  '采集 argv：B站/抖音不带 --name，小红书带；三个都显式 --max',
+  biliFetchPlan.ok && biliFetchPlan.plan.args.join(' ') === 'fetch --account main --max ' + FETCH_MAX + ' --out ' + outOf('bilibili')
+    && dyFetchPlan.ok && dyFetchPlan.plan.args.join(' ') === 'fetch --account main --max ' + FETCH_MAX + ' --out ' + outOf('douyin')
+    && xhsFetchPlan.ok && xhsFetchPlan.plan.args.join(' ') === 'fetch --account main --name main --max ' + FETCH_MAX + ' --out ' + outOf('xhs'),
+  [biliFetchPlan.ok && biliFetchPlan.plan.args.join(' '), xhsFetchPlan.ok && xhsFetchPlan.plan.args.join(' ')].join(' | '),
+);
+check('采集产出永远落在工作区 tmp/ 下', biliFetchPlan.ok && path.dirname(biliFetchPlan.plan.outFile) === path.join(unbindWs, 'tmp'));
+check('采集凭据路径按别名算', biliFetchPlan.ok && biliFetchPlan.plan.credentialFile === path.join(unbindWs, 'config', 'bilibili_main.txt'));
+check('采集计划不认穿越账号', buildFetchPlan('bilibili', '../x', { root: unbindWs }).code === 'bad-account');
+check('采集计划缺工作区根就报错（不猜目录）', buildFetchPlan('bilibili', 'main', {}).code === 'no-workspace');
+check('视频号采不了也导不进', buildFetchPlan('shipinhao', 'main', { root: unbindWs }).code === 'no-collector');
+
+const fetchNoCred = await postJsonTo(fetchRoute, { platform: 'bilibili', account: 'main' });
+check(
+  '没有凭据就不起脚本 → no-credential（刚才那份已被解绑删掉）',
+  fetchNoCred.body.ok === false && fetchNoCred.body.code === 'no-credential',
+  JSON.stringify(fetchNoCred.body),
+);
+const fetchBadPlatform = await postJsonTo(fetchRoute, { platform: 'nope', account: 'main' });
+check('POST /fetch 坏平台 → bad-platform', fetchBadPlatform.body.ok === false && fetchBadPlatform.body.code === 'bad-platform', JSON.stringify(fetchBadPlatform.body));
+const fetchStateRes = fakeRes();
+fetchStateRoute.handler({ method: 'GET' }, fetchStateRes);
+const fetchStateBody = JSON.parse(fetchStateRes.body);
+check(
+  'GET /fetch/state 没跑过就是 idle，且文案是人话',
+  fetchStateBody.ok === true && fetchStateBody.fetch.phase === 'idle' && fetchStateBody.fetch.message.length > 0 && fetchStateBody.fetch.counts === null,
+  fetchStateRes.body,
+);
+const fetchStateWrongRes = fakeRes();
+fetchStateRoute.handler({ method: 'POST' }, fetchStateWrongRes);
+check('GET /fetch/state 拒绝别的 method', fetchStateWrongRes.statusCode === 405, String(fetchStateWrongRes.statusCode));
+
+const overdueState = describeFetchState({ phase: 'running', platform: 'bilibili', account: 'main', startedAt: 1000, log: 'x' }, 1000 + FETCH_TIMEOUT_MS + 6000);
+check('采集卡太久按失败说，不永远转圈', overdueState.phase === 'failed' && overdueState.message.includes('超时'), overdueState.message);
+const doneState = describeFetchState({ phase: 'done', counts: { created: 3, updated: 2, skipped: 1 } });
+check(
+  '采集完成把人话说清（新建/更新）',
+  doneState.phase === 'done' && doneState.message.includes('新建 3') && doneState.message.includes('更新 2') && doneState.counts.skipped === 1,
+  doneState.message,
+);
+const leakState = describeFetchState({ phase: 'failed', log: '开始\nSESSDATA=leak\n没登录' });
+check(
+  '采集日志里的凭据值被丢掉，失败只说最后一行',
+  leakState.log.includes('SESSDATA') === false && leakState.message === '没登录',
+  leakState.log + ' || ' + leakState.message,
+);
+check('countsOf 拿不到就 null（0 会被读成「跑了没变化」）', countsOf(null) === null && countsOf({ ok: false }) === null);
+check(
+  'countsOf 只认整数、skipped 数长度',
+  JSON.stringify(countsOf({ ok: true, createdCount: 1, updatedCount: 0, skipped: ['a', 'b'] })) === '{"created":1,"updated":0,"skipped":2}',
+  JSON.stringify(countsOf({ ok: true, createdCount: 1, updatedCount: 0, skipped: ['a', 'b'] })),
+);
+
 
 // —— 侧栏面板的客户端 bundle：DSH 的 module loader 契约 ——
 const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
@@ -762,7 +915,7 @@ check(
 );
 
 // —— 隐私：不外传、不落仓库 ——
-const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/login.js', 'lib/bilibili.js', 'lib/douyin.js', 'lib/xiaohongshu.js'];
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/login.js', 'lib/fetch.js', 'lib/bilibili.js', 'lib/douyin.js', 'lib/xiaohongshu.js'];
 // 出网：所有文件都不许，这条没有例外
 const netPatterns = [
   /\bfetch\s*\(/,
