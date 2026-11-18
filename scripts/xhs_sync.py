@@ -21,6 +21,9 @@
 
 命令：`login` 扫码登录、`fetch` 导出并生成 JSON（用 std::lib 解析 xlsx：zipfile + ElementTree）。
 
+凭据：`config/xhs_<账号>.txt` 里是 **JSON 对象** `{"web_session": "...", "a1": "...", ...}`
+（缩进 2、UTF-8 无 BOM，与抖音脚本统一）；老的单行 `k=v; k=v` 文件仍能读，不用重扫。
+
 退出码：0 成功 / 1 一般错误 / 2 cookie 过期（要重新 login）/ 3 触发风控 / 4 扫码超时或取消。
 """
 
@@ -122,6 +125,7 @@ def validate_account(raw):
 
 
 def parse_cookie_line(line):
+    """旧格式（单行 `k=v; k=v`）拆成列表；值里的 '=' 保留（只按第一个等号切）。"""
     pairs = []
     for chunk in (line or "").split(";"):
         name, _, value = chunk.strip().partition("=")
@@ -130,24 +134,46 @@ def parse_cookie_line(line):
     return pairs
 
 
+def parse_credential(text):
+    """凭据文件的两种格式都认：JSON 对象（本脚本写的新格式）与旧的单行 `k=v; k=v`。
+
+    老文件不重扫也能用；JSON 分支只留字符串且非空的字段，非对象 JSON 直接报错。
+    错误信息里只有字段名/文件路径，不含任何 cookie 值。
+    """
+    body = (text or "").lstrip()
+    if body[:1] in ("{", "["):
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as error:
+            raise SyncError(f"凭据文件是 JSON 但解析失败（{error}），请重新 login", EXIT_AUTH) from error
+        if not isinstance(payload, dict):
+            raise SyncError("凭据文件的 JSON 不是一个对象（应为 {字段: 值}），请重新 login", EXIT_AUTH)
+        return [(str(name), value) for name, value in payload.items() if isinstance(value, str) and value]
+    return parse_cookie_line(text)
+
+
 def cookie_to_header(pairs):
     return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
 def describe_cookie_line(line):
-    """只报字段名与长度，绝不回显值。"""
-    pairs = parse_cookie_line(line)
+    """只报字段名与长度，绝不回显值；JSON 与旧单行都认。"""
+    pairs = parse_credential(line)
     return "、".join(f"{name}(len={len(value)})" for name, value in pairs) or "（空）"
 
 
 def load_credential(account):
+    """读凭据并返回 cookie 头（header）；调用方 export_workbook 吃的就是 header。"""
     path = credential_path(account)
     if not path.is_file():
         raise SyncError(f"没有 cookie：{path}（先跑 python scripts/xhs_sync.py login --account {account}）", EXIT_AUTH)
-    line = path.read_text(encoding="utf-8").strip()
-    if "web_session" not in line:
-        raise SyncError(f"{path} 里没有 web_session，登录态不完整（重新 login）", EXIT_AUTH)
-    return line
+    text = path.read_text(encoding="utf-8").replace("\ufeff", "").strip()
+    if not text:
+        raise SyncError(f"凭据文件是空的：{path}，请重新 login", EXIT_AUTH)
+    pairs = parse_credential(text)
+    if not any(name == "web_session" for name, _ in pairs):
+        raise SyncError(f"{path} 里没有 web_session 字段，登录态不完整（重新 login）", EXIT_AUTH)
+    return cookie_to_header(pairs)
 
 
 # ---------------------------------------------------------------- xlsx 解析

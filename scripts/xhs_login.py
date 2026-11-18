@@ -5,13 +5,16 @@
     python scripts/xhs_login.py --out <路径> [--browser chrome|edge] [--headless] [--timeout 300]
 
 流程：起临时 profile 的浏览器 → 打开创作中心登录页 → 等 `web_session` cookie →
-把 `name=value; name=value; ...`（只取 xiaohongshu.com 域）写进 --out → 用页面内 fetch
-自查一次昵称。**只打印 cookie 的字段名和总长度，绝不打印 cookie 值。**
+把 cookie 写成 JSON 对象 `{"name": "value", ...}`（只取 xiaohongshu.com 域）写进 --out →
+用页面内 fetch 自查一次昵称。凭据文件现在是 JSON（缩进 2、UTF-8 无 BOM），与抖音脚本一个写法；
+老的单行 `name=value; name=value` 文件仍能读（见 scripts/xhs_sync.py 的 parse_credential）。
+**只打印 cookie 的字段名和总长度，绝不打印 cookie 值。**
 
 退出码：0 成功；1 失败（没找到浏览器 / 超时 / 其它异常）。
 """
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -103,15 +106,21 @@ def make_ticker(total):
 
 
 def save_cookie_line(path, cookies):
-    """把 {name: value} 拼成 "name=value; ..." 写盘，返回 (字段名列表, 总字节数)。"""
+    """把 {name: value} 写成 JSON 对象文件，返回 (字段名列表, 总字节数)。
+
+    内容是 `json.dumps(dict, ensure_ascii=False, indent=2) + "\n"`、UTF-8 无 BOM，
+    与 scripts/douyin_sync.py 的 save_credential 完全一致（四个平台统一 JSON 凭据）。
+    返回值形状不变；只报字段名与总长度，绝不回显值。
+    """
     names = list(cookies)
-    line = "; ".join(f"{name}={cookies[name]}" for name in names)
+    payload = {name: cookies[name] for name in names}
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     directory = os.path.dirname(os.path.abspath(path))
     if directory:
         os.makedirs(directory, exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="") as handle:
-        handle.write(line)
-    return names, len(line.encode("utf-8"))
+        handle.write(text)
+    return names, len(text.encode("utf-8"))
 
 
 def self_check(session):

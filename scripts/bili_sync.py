@@ -8,13 +8,16 @@
     插件只吃它产出的 JSON 文件。两边靠文件解耦：脚本挂了不影响插件，插件升级也不碰脚本。
 
 两个子命令：
-    login   扫码登录，把 cookie 存到 <工作区根>/config/bilibili_<account>.txt
+    login   扫码登录，把 cookie 存到 <工作区根>/config/bilibili_<account>.txt（内容是一个 JSON 对象）
     fetch   拉取稿件列表 + 每个稿件的三份数据 + 实时互动数，产出 <工作区根>/tmp/bili-import.json
 
 约定：
     - 只用标准库 + 仓库内的 scripts/xhs_browser.py（纯标准库的 CDP 小工具）。默认 login 借本机
       Chrome/Edge 打开 B站官方登录页扫码，不需要任何第三方包；--qr 是「纯 HTTP 申请二维码并渲染
       成 PNG」的退路，只有它需要可选的 qrcode/pillow（懒加载），fetch 完全不付这个开销；
+    - 凭据文件是「txt 里放一个 JSON 对象」：json.dumps(dict, ensure_ascii=False, indent=2) + 换行，
+      UTF-8 无 BOM，写法与 scripts/douyin_sync.py 完全一致（四个平台统一这一套）。旧版的
+      `k=v; k=v` 单行仍然能读，只是为了不让已存的凭据失效，新写入一律是 JSON；
     - cookie 值永不打印，只打印字段名与长度；
     - 工作区根从本文件向上找「同层既有 AGENTS.md 又有 code/」的目录，代码里不写死盘符路径；
     - 缺失字段写 null，不写 0 冒充；降级情况记进输出 JSON 的 warnings。
@@ -339,7 +342,10 @@ class BiliClient:
 
 
 def cookie_to_header(pairs: list[tuple[str, str]]) -> str:
-    """把 (name, value) 列表拼成单行 cookie 头。"""
+    """把 (name, value) 列表拼成 HTTP 请求用的 Cookie 头（`k=v; k=v`）。
+
+    这只描述请求头，不是凭据文件的格式：文件里存的是 JSON 对象，见 save_credential。
+    """
     return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
@@ -372,10 +378,6 @@ def jar_to_pairs(jar: http.cookiejar.CookieJar) -> list[tuple[str, str]]:
     return order_cookie_pairs(collected)
 
 
-def serialize_jar(jar: http.cookiejar.CookieJar) -> str:
-    return cookie_to_header(jar_to_pairs(jar))
-
-
 def browser_cookie_pairs(cookies: dict) -> list[tuple[str, str]]:
     """把 CDP 读出来的 {name: value} 摊平成有序列表；空值丢掉，缺关键字段按现有校验报错。
 
@@ -396,32 +398,77 @@ def browser_cookie_pairs(cookies: dict) -> list[tuple[str, str]]:
     return order_cookie_pairs(collected)
 
 
-def save_credential(account: str, cookie_line: str) -> Path:
-    """写凭据：UTF-8 无 BOM、单行、不带结尾换行。"""
+def save_credential(account: str, pairs: list[tuple[str, str]]) -> Path:
+    """写凭据：UTF-8 无 BOM、JSON 对象、缩进 2、以换行结尾。
+
+    字段顺序照传入的列表走（调用方已用 order_cookie_pairs 排好），这里不再重排，
+    免得「浏览器路径」和「jar 路径」各排出一个顺序。
+    """
     path = credential_path(account)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(cookie_line, encoding="utf-8", newline="")
+    payload = dict(pairs)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline=""
+    )
     return path
 
 
-def load_credential(account: str) -> str:
-    """读凭据文件并校验关键字段存在；不打印任何值。"""
+def load_credential(account: str) -> tuple[str, list[tuple[str, str]]]:
+    """读凭据并校验关键字段存在；返回 (cookie 头, 键值对)；不打印任何值。"""
     path = credential_path(account)
     if not path.is_file():
-        raise SyncError(f"凭据文件不存在：{path}\n请先运行：python scripts/bili_sync.py login --account {account}")
+        raise SyncError(
+            f"凭据文件不存在：{path}\n请先运行：python scripts/bili_sync.py login --account {account}",
+            EXIT_AUTH,
+        )
     text = path.read_text(encoding="utf-8").replace("\ufeff", "").strip()
     if not text:
-        raise SyncError(f"凭据文件是空的：{path}，请重新 login")
-    pairs = parse_cookie_line(text)
+        raise SyncError(f"凭据文件是空的：{path}，请重新 login", EXIT_AUTH)
+    pairs = parse_credential(text)
     names = [name for name, _ in pairs]
     missing = [name for name in REQUIRED_COOKIE_FIELDS if name not in names]
     if missing:
-        raise SyncError(f"凭据文件缺少字段 {missing}：{path}，请重新 login")
-    return cookie_to_header(pairs)
+        raise SyncError(f"凭据文件缺少字段 {missing}：{path}，请重新 login", EXIT_AUTH)
+    return cookie_to_header(pairs), pairs
+
+
+def parse_credential(text: str) -> list[tuple[str, str]]:
+    """凭据文件的两种格式都认：JSON 对象（本脚本写的）与旧版 `k=v; k=v` 单行。
+
+    旧单行仍能读，是为了不让已经存下来的凭据因为换格式而失效；新写入一律是 JSON。
+    以 `{` 或 `[` 开头的按 JSON 读，解析失败就直接报错、不退回单行——否则一个好端端坏掉的
+    JSON 会被当成「缺字段」报出来，反而更难查。报错文本只带字段名/行号，绝不含值。
+    """
+    body = text.replace("\ufeff", "").lstrip()
+    if not body.startswith(("{", "[")):
+        # 旧单行永远不会以 { 或 [ 开头；看着像 JSON 就按 JSON 报错，别退回单行。
+        return parse_cookie_line(text)
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise SyncError(
+            f"凭据文件是 JSON 但解析失败（{error.msg}，第 {error.lineno} 行第 {error.colno} 列），"
+            "请重新 login",
+            EXIT_AUTH,
+        ) from error
+    if not isinstance(payload, dict):
+        raise SyncError(
+            f"凭据文件的 JSON 顶层是 {type(payload).__name__}，不是一个对象，请重新 login",
+            EXIT_AUTH,
+        )
+    pairs: list[tuple[str, str]] = []
+    for name, value in payload.items():
+        # 只收非空字符串：数字/布尔/null 都不像真的 cookie 值，静默丢掉而不是转成 "3"。
+        if isinstance(value, str) and value:
+            pairs.append((str(name), value))
+    return pairs
 
 
 def parse_cookie_line(line: str) -> list[tuple[str, str]]:
-    """把 `k=v; k=v` 拆成列表。值里的 '=' 保留（只按第一个等号切）。"""
+    """旧格式（`k=v; k=v` 单行）拆成列表。值里的 '=' 保留（只按第一个等号切）。
+
+    这是向后兼容路径，只喂给 parse_credential 的回落分支。
+    """
     pairs: list[tuple[str, str]] = []
     for chunk in line.split(";"):
         item = chunk.strip()
@@ -432,10 +479,17 @@ def parse_cookie_line(line: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def describe_cookie_line(line: str) -> str:
+def describe_cookie_pairs(pairs: list[tuple[str, str]]) -> str:
     """只输出字段名与长度——排查凭据是否过期用，绝不回显值。"""
-    pairs = parse_cookie_line(line)
     return "，".join(f"{name}(len={len(value)})" for name, value in pairs)
+
+
+def describe_cookie_line(line: str) -> str:
+    """吃两种格式（JSON 对象 / 旧单行）的文本，只输出字段名与长度，绝不回显值。
+
+    手里已经有键值对时直接用 describe_cookie_pairs，省一次解析。
+    """
+    return describe_cookie_pairs(parse_credential(line))
 
 
 # ---------------------------------------------------------------------------
@@ -587,9 +641,9 @@ def cmd_login_browser(args) -> int:
         raise SyncError(f"浏览器扫码失败：{error}") from error
 
     cookie_line = cookie_to_header(pairs)
-    path = save_credential(account, cookie_line)
+    path = save_credential(account, pairs)
     print(f"  已写入凭据：{path}")
-    print(f"  字段：{describe_cookie_line(cookie_line)}", flush=True)
+    print(f"  字段：{describe_cookie_pairs(pairs)}", flush=True)
     save_identity(account, verify_login_state(cookie_line))
     return EXIT_OK
 
@@ -748,11 +802,12 @@ def cmd_login_http(args) -> int:
     if not b_3 or not b_4:
         print(f"  警告：finger/spi 只给了 b_3={bool(b_3)} b_4={bool(b_4)}，凭据可能不完整", flush=True)
 
-    # 5) 序列化落盘
-    cookie_line = serialize_jar(jar)
-    path = save_credential(account, cookie_line)
+    # 5) 落盘：jar 直接摊平成有序键值对，写 JSON（与浏览器路径同一份格式）
+    pairs = jar_to_pairs(jar)
+    cookie_line = cookie_to_header(pairs)
+    path = save_credential(account, pairs)
     print(f"  已写入凭据：{path}")
-    print(f"  字段：{describe_cookie_line(cookie_line)}", flush=True)
+    print(f"  字段：{describe_cookie_pairs(pairs)}", flush=True)
 
     # 6) 用 nav 验证一次，顺手把真实身份记到 <凭据>.identity.json
     save_identity(account, verify_login_state(cookie_line))
@@ -1131,7 +1186,7 @@ def cmd_fetch(args) -> int:
     if args.compare_size <= 0:
         raise SyncError("--compare-size 必须是正整数")
 
-    cookie_header = load_credential(account)
+    cookie_header, pairs = load_credential(account)
     client = BiliClient(cookie_header)
     warnings: list[str] = []
 
@@ -1141,7 +1196,7 @@ def cmd_fetch(args) -> int:
         f"level={account_info.get('level')}",
         flush=True,
     )
-    print(f"凭据字段：{describe_cookie_line(cookie_header)}", flush=True)
+    print(f"凭据字段：{describe_cookie_pairs(pairs)}", flush=True)
 
     # 4) 同行对比数据：一次调用，按 bvid 建索引
     compare_index = fetch_compare_index(client, args.compare_size, warnings)
@@ -1227,7 +1282,7 @@ def build_parser() -> argparse.ArgumentParser:
             "默认路径：拉起本机 Chrome/Edge（临时 profile，不碰你日常的浏览器）打开 B站官方登录页，\n"
             "页面自己渲染二维码，你用 B站手机客户端扫码；脚本通过 CDP 每 2 秒轮询一次 cookie，\n"
             "最长等 --timeout 秒（默认 300）。不需要任何第三方包。\n"
-            "成功后补 buvid3/buvid4、序列化 cookie 落盘，并用 nav 接口验证一次登录状态。\n"
+            "成功后补 buvid3/buvid4、把 cookie 写成 JSON 落盘，并用 nav 接口验证一次登录状态。\n"
             "退路：--qr 走纯 HTTP 申请二维码并渲染成 PNG，这条路需要 qrcode + pillow。\n"
             "cookie 值不会打印到终端，只打印字段名与长度。"
         ),
