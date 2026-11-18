@@ -183,7 +183,7 @@ def credential_path(account: str) -> Path:
 def identity_path(account: str) -> Path:
     """登录身份旁路文件：只记「这个号是谁」，一个 cookie 都不放。
 
-    凭据文件名只能表达别名（`main`），表达不了「这其实是 bili_90709929644」。
+    凭据文件名只能表达别名（`main`），表达不了「这其实是哪个昵称」。
     面板要区分两个号就必须知道真实身份，而身份不能从 cookie 里读（§5：凭据内容不出 Host），
     所以登录成功后由脚本另写一份 <凭据>.identity.json，面板只读这一份。
     """
