@@ -432,6 +432,10 @@ class BrowserSession:
 
     # -- CDP 调用 --------------------------------------------------------
 
+    def command(self, method, params=None, timeout=30):
+        """公开的 CDP 直通（供 xhs_sync 设下载目录、灌 cookie 用）；语义同 _call。"""
+        return self._call(method, params, timeout)
+
     def _call(self, method, params=None, timeout=30):
         """发一条 CDP 命令并等它的响应；顺手把期间收到的事件存进 self._events。"""
         if self.ws is None:
