@@ -47,7 +47,7 @@
 
 ## 2026-11-18 的一次真事故：删凭据删错了目录
 
-做解绑时第一版写的是「拿不到宿主注入的 `workspaceRoot` 就退回 `process.cwd()`」，测试也照着这个写——测试能过，因为它先 `chdir` 到临时目录再跑。而真实插件进程的 cwd 不在工作区（桌面版插件进程的 cwd 是宿主安装目录），于是那一次真解绑**没有回 `no-workspace`，而是顺着 cwd 拼路径删掉了 `config/bilibili_main.txt` 与它的 `.identity.json`**：B站凭据和昵称一起没了，只能重新扫码。
+做解绑时第一版写的是「拿不到宿主注入的 `workspaceRoot` 就退回 `process.cwd()`」，测试也照着这个写——测试能过，因为它先 `chdir` 到临时目录再跑。而真实插件进程的 cwd 不在工作区（桌面版插件进程的 cwd 是宿主安装目录），于是那一次真解绑**没有回 `no-workspace`，而是顺着 cwd 拼路径删掉了 `config/bilibili_main.txt`（当时的扩展名；0.5.9 起改叫 `.json`）与它的 `.identity.json`**：B站凭据和昵称一起没了，只能重新扫码。
 
 三处教训，都落成了断言：
 

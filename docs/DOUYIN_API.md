@@ -188,7 +188,7 @@ SDK 类默认 `aid=6383`，创作者中心全局 `aid=2906`（`setConfig({aid:29
 
 | 方案 | 做法 | 代价 | 稳定性 |
 |---|---|---|---|
-| **A. Cookie 导入**（推荐先做） | 浏览器登录 `creator.douyin.com` → F12 → Network 任一请求复制 `Cookie` 头 → 脚本 `login --cookie` 存进 `config/douyin_<account>.txt` | 一次手工粘贴；cookie 通常数周到数月有效 | 高：采集与登录解耦，cookie 过期重贴即可 |
+| **A. Cookie 导入**（推荐先做） | 浏览器登录 `creator.douyin.com` → F12 → Network 任一请求复制 `Cookie` 头 → 脚本 `login --cookie` 存进 `config/douyin_<account>.json` | 一次手工粘贴；cookie 通常数周到数月有效 | 高：采集与登录解耦，cookie 过期重贴即可 |
 | **B. 浏览器自动化扫码** | 脚本用本机 Chrome/Edge 以 `--remote-debugging-port` 起临时 profile → 打开登录页 → 用户扫码 → 通过 CDP 取 cookie | 要写 WebSocket 客户端（stdlib 无）；页面会检测 `webdriver`（改启动参数可绕过） | 中：扫一次能自动续，但依赖本机浏览器与 CDP 稳定性 |
 | **C. 逆 secsdk 签名** | 复刻 `web_protect` signVersion 2 | 工程量最大、随版本失效 | 低，不建议 |
 
@@ -227,7 +227,7 @@ SDK 类默认 `aid=6383`，创作者中心全局 `aid=2906`（`setConfig({aid:29
 |---|---|
 | 依赖 | 只用标准库（`urllib` + `socket`/`struct` 手写 RFC6455 的 WebSocket 客户端，不装 websocket-client） |
 | 子命令 | `login`（`--account`/`--port 9222`/`--browser`/`--timeout 180`/`--force`）、`fetch`（`--account`/`--max 50`（上限 200）/`--sleep 0.35`/`--out`）、`whoami`、`selftest` |
-| 凭据 | `<工作区根>/config/douyin_<account>.txt`（JSON，`name→value`），与 B站脚本同一目录约定 |
+| 凭据 | `<工作区根>/config/douyin_<account>.json`（JSON，`name→value`），与 B站脚本同一目录约定 |
 | 浏览器 profile | `<工作区根>/tmp/douyin-profile-<account>` |
 | 输出 | `<工作区根>/tmp/douyin-import.json`，顶层四键 `generated_at`/`account`/`posts`/`warnings` |
 | 退出码 | `0` 成功 / `1` 一般错误 / `2` 未登录（`status_code==8`，**不重试**）/ `3` 风控（352/412/2154）/ `4` 扫码超时 |
