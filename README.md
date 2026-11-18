@@ -64,6 +64,8 @@
 
 **扫码登录（0.5.2）**：平台没绑定时不用离开面板，两个地方都有「扫码登录」按钮——左栏点进那个平台的空态里，以及右栏顶部的提示条（「B站 还没绑定 · [扫码登录]」）。点了之后 Host 起一次对应脚本的 `login` 子命令（B站 `scripts/bili_sync.py login`、抖音 `scripts/douyin_sync.py login`、小红书 `scripts/xhs_sync.py login`），弹出来的浏览器窗口由你自己扫码——三个平台都是「拉起本机 Chrome/Edge、打开官方登录页、页面自己渲染二维码」，B站 0.5.4 起也走这条路，不再需要装 Python 的 `qrcode`/`pillow`，凭据落到 `config/<平台>_<账号>.txt`——账号默认 `main`，但**可以改**：按钮旁边能填名字，也能点一下已绑过的账号直接切过去（你有两个抖音号就 `main` 和小号各登一次，两份凭据各占一个文件）。账号名规则和三个脚本一致，`^[A-Za-z0-9_-]{1,32}$`，中文别名脚本本身不收，所以面板也当场拦住。面板每 2 秒问一次进度，成功就自动把标签翻成「已绑定」、提示条换成一行成功文案；失败时显示脚本报错的最后一行，日志尾部（最多 2000 字符）折在 `<details>` 里——够看出是没开浏览器、二维码过期还是被风控。日志按 UTF-8 解码（0.5.4 之前中文机上是一片「���� Bվ…」乱码，根因是 Python 按 cp936 写 stdout）。B站 `login` 成功后还会在 `config/` 里补一份 `<凭据>.identity.json`（只有昵称、mid、等级，**不含 cookie**），面板据此把账号显示成「main（昵称）」——两个号都叫 `main` 时一眼能看出这一行到底是谁（0.5.5）。想手工复现，照着敲按钮实际执行的那条命令即可。视频号没有采集脚本，所以那个位置是一句说明文字而不是按钮。
 
+**采集并导入 + 解绑（0.5.7）**：每个已绑定账号那一行多了两个按钮。**「采集并导入」**是手动触发的一次性动作——Host 起同一批白名单脚本的 `fetch` 子命令（`--account <别名> --max 50 --out <工作区根>/tmp/panel-fetch-<平台>-<账号>.json`，小红书额外带 `--name <别名>`，因为它的 `--name` 默认跟着 `--account` 走），跑完由 Host 读那份 JSON、调 `importCollectorOutput` 灌进台账，面板回「已导入 N 条（新建 X / 更新 Y）」。**退出码非 0 一律不导入**：失败时脚本可能只写了半份 JSON，灌进 append-only 的台账就撤不回来。导入时 `account` 覆盖成**凭据别名**（`main`）而不是平台昵称，否则左栏两级树会和绑定名对不上、同一个号裂成两桶数据。采集与登录共用同一个任务槽（同一时刻只跑一个，上限 30 分钟），进度每 2 秒轮询，日志只留尾部 2000 字符、`SESSDATA` 之类的凭据行在显示前就被抹掉。**「解绑」**只删两个算出来的确切文件：`config/<平台>_<账号>.txt` 与同名的 `.identity.json`，**台账一行不动**——解绑是「这台机器不再持有凭据」，不是删作品；点下去先落到右栏顶部的一次二次确认（行内两段式，不弹 `window.confirm`），确认后才发 POST，删完那一行变回「未绑定 + 扫码登录」。两个按钮都要求宿主注入的 `workspaceRoot`，拿不到就回 `no-workspace` 拒绝执行，绝不拿 `process.cwd()` 顶上——这条是 2026-11-18 一次真事故换来的，记在 [`docs/DESIGN.md`](docs/DESIGN.md)。
+
 左栏的**四个平台恒在**，行尾带绑定状态：
 
 | 标签 | 含义 | 点进去看到什么 |
@@ -78,7 +80,7 @@
 
 右上角有「在左侧栏显示」开关和刷新按钮。关掉开关会立刻摘掉侧栏图标，并通过 DSH 的 `configEditor` 把 `sidebar: false` 写回插件配置（只动这一行的 `config`，不碰 `cordis.patch.yml` 里别的行），重启后依然生效；图标藏起来之后，还能在命令面板里跑「自媒体台账」把它叫回来，所以没有「关掉就再也打不开」的死角。
 
-数据怎么到页面上：面板是浏览器里的 React 组件，读不到磁盘也读不到 Host 的 `config`，所以 Host 侧开几条**只走本机回环**的路由——`GET /api/dsh-media-ledger/state`（台账 + 每个筛选切片算好的复盘 + 开关状态 + 当前登录进度）、`POST /api/dsh-media-ledger/sidebar`（写开关）、`POST /api/dsh-media-ledger/login`（起一次登录脚本）、`GET /api/dsh-media-ledger/login/state`（登录进度）。它们不访问外网、不收任意参数：`sidebar` 只认 `{"value": true|false}`；`login` 只认 `{"platform": "bilibili"|"douyin"|"xhs", "account": "<账号名>"}`（省了按 `main`），账号名还要过 `^[A-Za-z0-9_-]{1,32}$`。登录是插件里**唯一**起进程的地方（见「隐私」一节），台账内容不出本机。数字全部来自 `media` 工具那套口径（最新快照、同批互动率、现算 T+），面板只换个地方显示，不另算一套。
+数据怎么到页面上：面板是浏览器里的 React 组件，读不到磁盘也读不到 Host 的 `config`，所以 Host 侧开几条**只走本机回环**的路由——`GET /api/dsh-media-ledger/state`（台账 + 每个筛选切片算好的复盘 + 开关状态 + 当前登录进度）、`POST /api/dsh-media-ledger/sidebar`（写开关）、`POST /api/dsh-media-ledger/login`（起一次登录脚本）、`GET /api/dsh-media-ledger/login/state`（登录进度）、`POST /api/dsh-media-ledger/unbind`（删这个账号的两份文件，台账不动）、`POST /api/dsh-media-ledger/fetch`（起一次采集并导入）、`GET /api/dsh-media-ledger/fetch/state`（采集进度）。它们不访问外网、不收任意参数：`sidebar` 只认 `{"value": true|false}`；`login` 只认 `{"platform": "bilibili"|"douyin"|"xhs", "account": "<账号名>"}`（省了按 `main`），账号名还要过 `^[A-Za-z0-9_-]{1,32}$`；`unbind` 与 `fetch` 同样只认 `{"platform", "account"}` 这两个字段，账号名走同一个正则——解绑**不给账号就报错**，不替你默认 `main`，免得手滑删错号。登录与采集是插件里**仅有的**两处起进程（见「隐私」一节），台账内容不出本机。数字全部来自 `media` 工具那套口径（最新快照、同批互动率、现算 T+），面板只换个地方显示，不另算一套。
 
 改完代码怎么生效：改 Host 侧（`index.js`、`lib/bridge.js` 等）要重装插件并重启 DSH；只改 `lib/client.js` 刷一下页面即可。从旧版本升上来要走一次 `remove_bundle` + `install_bundle`，否则跑的还是旧代码。
 
@@ -214,7 +216,7 @@ media { action: "import_douyin", path: "…", dry_run: true }
 ## 隐私：数据不出本机
 
 - **不联网**：插件代码里没有 `fetch` / `http` / `https` / `net`，没有任何出网路径，也没有第三方依赖（`dependencies` 为空）。`test/smoke.mjs` 里有一条断言守着这个事实，谁哪天加了出网代码，测试会先挂。
-- **默认不起进程，唯一例外是登录**：`lib/bridge.js` 里允许 `spawn` 一次 `scripts/` 下的白名单登录脚本（就是你点「扫码登录」那一下，2026-11-18 用户批准）。`lib/` 其他文件与 `index.js` 仍然零 `child_process`：平台只认三个、只跑 `login` 子命令、命令与参数写死、`shell` 不开、账号名过 `^[A-Za-z0-9_-]{1,32}$`、330 秒超时（脚本自己等扫码最长 300 秒——抖音默认 180，桥多留一截收尾）、同一时刻只允许一个任务。为什么这一处可以破例、破了为什么不危险，写在 [`docs/DESIGN.md`](docs/DESIGN.md) 的「为什么允许这一处起进程」。
+- **默认不起进程，例外只有登录与采集**：`lib/bridge.js` 里允许 `spawn` 一次 `scripts/` 下的白名单脚本（就是你点「扫码登录」或「采集并导入」那一下；登录 2026-11-18 用户批准，采集同日经用户裁决「面板加一个『采集并导入』按钮、手动触发、不自动」批准）。`lib/` 其他文件与 `index.js` 仍然零 `child_process`：平台只认三个、只跑 `login` 与 `fetch` 两个子命令、命令与参数写死、`shell` 不开、账号名过 `^[A-Za-z0-9_-]{1,32}$`、登录 330 秒 / 采集 30 分钟超时、同一时刻只允许一个任务；采集产出只落工作区根的 `tmp/`，导入前先看退出码，非 0 不导入。**采集与解绑拿不到宿主注入的 `workspaceRoot` 就拒绝执行（`no-workspace`），绝不回落 `process.cwd()`**——2026-11-18 就是这个回落把真实凭据删掉了。为什么这一处可以破例、破了为什么不危险，写在 [`docs/DESIGN.md`](docs/DESIGN.md) 的「为什么允许这一处起进程」；事故本身记在同一份文档的「删凭据删错了目录」一节。
 - **不写进仓库**：台账默认在工作区根的 `data/media-ledger`（按上表可改，找不到工作区才退回 `~/media-ledger`），两种位置都在仓库外。`.gitignore` 已挡住 `data/` 与 `*.jsonl`，即使把 `dataDir` 指进仓库也不会被提交。
 - **不含示例数据**：仓库里没有任何真实作品、账号 ID、播放量，只有代码、文档和自测用的假数据（`test/` 里，一眼可辨是 mock）。
 - **不碰宿主的存储**：数据目录由你配置，插件不往 DSH 自己的 profile 或数据库里塞东西。
@@ -245,7 +247,9 @@ lib/xiaohongshu.js 小红书导出产出的 JSON → 台账记录（纯函数映
 lib/douyin.js      抖音采集产出的 JSON → 台账记录（纯函数映射，同一套归一形状，不联网）
 lib/tool.js        唯一工具 media（action 分派）
 lib/panel.js       面板数据整形（筛选树 facets + 每个切片的复盘，只搬运 metrics 的口径，不另算指标）
-lib/bridge.js      Host 侧面板桥：/state 与 /sidebar，外加登录用的 /login 与 /login/state（唯一 spawn 的地方）
+lib/bindings.js    绑定状态与解绑计划（纯函数：凭据文件名 → 平台/账号、身份旁路的昵称、解绑该删哪两份文件）
+lib/fetch.js       采集计划与进度文案（纯函数：argv 拼装、产出文件名、导入计数、状态描述）
+lib/bridge.js      Host 侧面板桥：/state、/sidebar、/login、/login/state、/unbind、/fetch、/fetch/state（唯一 spawn 的地方，登录与采集各一次）
 lib/client.js      浏览器侧 bundle：侧栏图标「自媒体台账」+ 面板页（左导航 + 右内容，含扫码登录与进度轮询）+ 命令面板入口
 locale/zh.json     面板标题与说明
 locale/en.json     英文标题与说明
@@ -277,12 +281,13 @@ $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自�
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
-`smoke.mjs` 守的是口径（时间解析、最新快照、互动率同批、BOM、坏行行号、重复 id）和面板契约（列表整形、开关默认开、四条路由的方法与请求体、客户端 bundle 的 ModuleLoader / id / React 来源、bundle 真跑一遍能否注册出侧栏图标与主面板）；另有登录例外的三组断言：`bridge.js` 之外零 `child_process`、`spawn` 全仓库只出现一次、`shell: true` 零命中，
+`smoke.mjs` 守的是口径（时间解析、最新快照、互动率同批、BOM、坏行行号、重复 id）和面板契约（列表整形、开关默认开、**七条**路由的方法与请求体、客户端 bundle 的 ModuleLoader / id / React 来源、bundle 真跑一遍能否注册出侧栏图标与主面板）；另有登录/采集例外的三组断言：`bridge.js` 之外零 `child_process`、`spawn` 全仓库只出现一次、`shell: true` 零命中；解绑另有四条硬断言（坏账号不留文件、只删算出来那两份、再删一次幂等、**没拿到工作区根就一个文件都不删**），
 `activate.mjs` 守的是接口（工具名、参数表、`execute` 返回无损 JSON、卸载能否回收）。
 
 ## 状态
 
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
+- 采集并导入 + 解绑已做（0.5.7）：面板上每个已绑定账号两个按钮——「采集并导入」手动起一次白名单 `fetch`（`--max 50`，产出落工作区根 `tmp/panel-fetch-<平台>-<账号>.json`），Host 读回后用 `importCollectorOutput` 灌台账并回「新建 X / 更新 Y」；退出码非 0 一律不导入，`account` 覆盖成凭据别名而不是平台昵称。「解绑」只删 `config/<平台>_<账号>.txt` 与 `.identity.json` 两份文件，台账一行不动。两条路都要宿主注入的工作区根，拿不到就拒绝执行。同一时间只跑一个任务（登录与采集共用槽，采集上限 30 分钟，有任务在跑时解绑被挡住），桥路由从四条增到七条。
 - 凭据文件统一 JSON（0.5.6）：B站/小红书/抖音三个采集脚本现在都写「一个 JSON 对象」（`config/<平台>_<账号>.txt`，缩进 2、UTF-8 无 BOM、以换行结尾），旧的一行 `k=v; k=v` 仍能读，所以升级后不用重扫码。B站 `save_credential` 收键值对、`load_credential` 返回 `(cookie 头, 键值对)`，小红书 `save_cookie_line` 同样改写 JSON。
 - 绑定显示真实昵称（0.5.5）：B站 `login` 验证通过后把身份写进 `config/bilibili_<账号>.identity.json`（只有 `uname`/`mid`/`level`，无 cookie），面板读它把账号显示成「main（昵称）」——左栏「已绑定·无数据」的账号、登录框里的快捷标签都带昵称。文件缺了不影响任何功能，只是少一个别名。
 - B站扫码登录改走浏览器（0.5.4）：`login` 默认拉起本机 Chrome/Edge 打开 `https://passport.bilibili.com/login`（页面自己渲染二维码），脚本用 CDP 每 2 秒轮询 `bilibili.com` 域的 cookie，等 `SESSDATA` 落袋后补 `buvid3`/`buvid4`、落盘、`nav` 验证；纯 HTTP 二维码 PNG 降为退路 `--qr`（要 `qrcode`+`pillow`）。同版本修掉面板日志乱码（spawn 时强制 `PYTHONIOENCODING=utf-8`/`PYTHONUTF8=1`）。
