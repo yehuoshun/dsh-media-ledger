@@ -13,14 +13,15 @@
 |---|---|
 | 页面框架 | 微前端：`bundler-runtime` + `library-launcher`（zeus 引擎）+ 业务 chunk；统计页代码在 `index.ee084460.js` |
 | 接口清单来源 | **前端常量表**（不像抖音用服务端 prefetch JSON）：所有路径写死在 `index.ee084460.js` 的 `API_LIST` 里，改版要发版 |
-| 数据接口网关 | `creator.xiaohongshu.com/api/galaxy/...`，**不需要 `x-s` 签名**；未登录只回 `HTTP 401` + `{"code":-100,...,"msg":"无登录信息"}` |
+| 数据接口网关 | `creator.xiaohongshu.com/api/galaxy/...`，**也要 `x-s` 签名**（先前的「不校验」结论已推翻，见 §4.3）；未登录时回 `HTTP 401` + `{"code":-100,...,"msg":"无登录信息"}` |
 | 登录接口网关 | `edith.xiaohongshu.com/api/sns/web/...`，**强制 `x-s` 签名**；裸 HTTP 一律 `HTTP 406 {"code":-1,"success":false}` |
 | 扫码登录（纯 HTTP） | **走不通**：二维码创建接口在 edith，签名不过就没二维码（实测 406，加 `a1` cookie、加假 `X-s` 都不行） |
-| 扫码登录（借浏览器） | **可行**（实测）：起本机 Chrome + CDP，让页面自己出二维码，脚本轮询 cookie 拿 `web_session` |
+| 扫码登录（借浏览器） | **可行**（实测通过）：起本机 Chrome + CDP，让页面自己出二维码，脚本轮询 cookie 拿 `web_session` |
 | 签名头 | `X-S` / `X-t` / `X-Mns` / `X-S-Common`（还有 `Sc-T`）；签名函数 `window._webmsxyw` 由服务端下发脚本注入 |
-| 采集结论 | **数据侧只要 cookie、不要签名**；只有登录这一步需要签名 → 登录借浏览器，采集仍走纯 HTTP |
+| 签名强度 | **签名把 query 绑死了**：抓到真实请求原样重放 → 200；改任一参数（甚至删掉时间参数）→ 406。页内 `_webmsxyw` 能算出签名，但钩不到调用（模块闭包持有） |
+| 采集结论 | **不自己签名**。改借页面自己的「导出数据」按钮拿 `笔记列表明细表.xlsx`，一次导出拿到全部笔记的核心字段（上限 1000 条） |
 
-> 一句话把工程决策说清：**别去逆 `x-s`**。数据接口在 galaxy 网关，验完登录态就放行；真正卡签名的是 edith 上的登录接口，而那一步用本机浏览器扫码就绕过去了。
+> 一句话把工程决策说清：**别去逆 `x-s`**。它能算但绑参数、拿不到调用点，短线内稳不住；而页面上「导出数据」已经把要的指标全给了，采集就该走这条路——浏览器只负责点一下按钮和收文件，其余全在本地解析。
 
 ---
 
@@ -157,17 +158,34 @@ f.headers["Sc-T"] = window.__xhs_sc__.getXHSToken() || "";
 
 - 签名函数 `window._webmsxyw` 和 `window.mns` **不是 bundle 里的**，由服务端下发的安全脚本注入（loader 里 `U = "/api/sec/v1/scripting"`、`L = "/api/sec/v1/sbtsource"`，还有 `websectiga` / `sec_poison_id` / `xsecappid` 这几个 localStorage/cookie key）。**所以复刻签名 = 复刻一段会变的混淆脚本**，不稳定，别做。
 - 实测：登录页跑起来后，页面上下文里 `typeof window._webmsxyw === "function"`（可用），`typeof window.mns === "undefined"`（creator 站没注入 mns，所以 `X-Mns` 对 creator 不关键）。
-- 拦截器里的 `d.JJ(url)` 决定「这条 URL 要不要签」；实测的反证很清楚：**galaxy 路径未签名能过到业务层，sns/web 路径未签名卡在 406**。
+- 拦截器里的 `d.JJ(url)` 决定「这条 URL 要不要签」；未登录实测：galaxy 路径未签名能过到业务层（401 `code:-100`），sns/web 路径未签名卡在 406。**但登录态下 galaxy 同样要签名**，见 §4.3。
 
 ### 4.2 哪些要签，哪些不要
 
 | 网关 / 前缀 | 签名 | 证据 |
 |---|---|---|
-| `creator.xiaohongshu.com/api/galaxy/**` | **不要** | 未签名请求返回 401 + `code:-100`（业务层错误） |
+| `creator.xiaohongshu.com/api/galaxy/**` | **要**（登录态实测） | 原样重放 200、改参数 406，见 §4.3 |
 | `edith.xiaohongshu.com/api/sns/web/**` | **要** | 未签名返回 406 `{"code":-1}` |
 | `edith.xiaohongshu.com/api/qrcode/**` | 要（且只在 edith 有，www 上 404/503） | 见 §5 |
 
-> 保留风险：登录态下 galaxy 是否**额外**要求某些头（如 `X-S-Common`）尚未实测（拿不到真 cookie）。采集脚本要为此留一条降级路径：检测到 406 就提示「改用 `--browser` 模式」，浏览器模式下所有请求都在页面里发，签名由页面自己的注入脚本负责。
+### 4.3 实测：签名把 query 绑死了（所以不逆）
+
+用 `scripts/xhs_browser.py` 起无头浏览器 + 灌 cookie，打开数据分析页，从 CDP 抓真实列表请求：
+
+- URL：`/api/galaxy/creator/datacenter/note/analyze/list?post_begin_time=1792252800000&post_end_time=1795017599000&type=0&page_size=10&page_num=1`（**参数确为 snake_case**，时间是毫秒）
+- 头：`X-s`（340 字符，`XYW_` 前缀的 base64，解出来是 `{"signSvn":"56","signType":"x2","appId":"ugc","signVersion":"1","payload":"…"}`）、`X-t`（13 位毫秒）、`X-S-Common`（320 字符）、`x-b3-traceid`、`x-xray-traceid`、`Referer`、UA
+
+实验结果：
+
+| 做法 | 结果 |
+|---|---|
+| 原样重放（同 URL 同头） | **200**，`{"msg":"成功","data":{"total":2,"result":{…},"note_infos":[{"id":"6afc64110000000018028304",…}]}}` |
+| 改 `type` / `page_size` / `page_num` | **406** |
+| 删掉时间参数 | **406** |
+| 页内调 `window._webmsxyw(path, params)` 取签名再发 | **406**（即使用同一份真实 `X-S-Common`、补 traceid） |
+| `Object.defineProperty` 或 20ms 轮询去包 `_webmsxyw` 记录调用 | **录不到**（`signLog` 恒为 0，页面用的是闭包里那份） |
+
+结论：签名与「路径+query+body」绑定，且拿不到页面内部的调用点，**复刻签名不可行**。要拿数据只有两条路：①在页面上下文里发请求（受制于页面自己的分页与筛选）；②用页面提供的导出。实测「导出数据」按钮（右上角，点击无二次确认）直接下 `笔记列表明细表.xlsx`，字段够台账用，故取②。
 
 ---
 
@@ -210,13 +228,28 @@ f.headers["Sc-T"] = window.__xhs_sc__.getXHSToken() || "";
 
 ## 6. 字段 → 台账映射
 
-（待补：依赖 `note/analyze/list` 与 `note/base` 的真实字段名，见 §8 待实测 1。）
+导出的 `笔记列表明细表.xlsx` 结构（实测）：第 1 行是合并提示「最多导出排序后前 1000 条笔记」，第 2 行是表头，第 3 行起是数据；`xl/sharedStrings.xml` 是空的，所有字符串都是 `t="inlineStr"` 的 `<is><t>`，所以解析要走 inlineStr 分支（别只认 sharedStrings）。
 
-台账现有口径（B站那套已定型，小红书沿用形状）：
+| 导出列 | 台账字段 | 说明 |
+|---|---|---|
+| 笔记标题 | `post.title` | 也是派生成 `platform_id` 的原料 |
+| 首次发布时间 | `post.published_at` / `post.date` | 原样是 `2026年11月17日22时26分25秒`，脚本转成 `YYYY-MM-DD HH:MM:SS` |
+| 体裁 | `post.kind` | 「视频」→ `视频`，其余记 `图文` |
+| 观看量 | `metric.play` | **观看量不是曝光量**，别混 |
+| 曝光 | `extras.impressions` | 只作旁证，不进 `play` |
+| 封面点击率 | `extras.cover_click_rate` | 导出是 0~1 小数（如 `0.037`），台账统一 0~100，×100 |
+| 点赞 / 评论 / 收藏 / 分享 | `metric.like` / `comment` / `collect` / `share` | |
+| 涨粉 | `metric.fans` | 小红书有这一列，B站没有；`report` 目前不用它 |
+| 人均观看时长 | `extras.view_time` | 秒 |
+| 弹幕 | `extras.danmaku` | |
+
+**导出不给 note_id，也不给链接**。`note_id` 由脚本派生：`xhs` + `sha1("{标题}|{发布时间}")[:14]`；同一篇笔记标题与发布时间不变就稳定，改标题会变成「新作品」（可接受，导出表里没别的稳定键）。合成 id 不拼 `explore/<id>` 链接——那地址点开是 404，宁可空着。
+
+台账记录形状（与 B站一致）：
 
 ```js
 post   = { platform, account, kind, title, date, published_at, url, note, platform_id }
-metric = { post_id, captured_at, play, like, comment, share, collect, extras }
+metric = { post_id, captured_at, play, like, comment, share, collect, fans?, extras }
 ```
 
 ---
@@ -225,22 +258,31 @@ metric = { post_id, captured_at, play, like, comment, share, collect, extras }
 
 | 项 | 约定（对齐 `bili_sync.py`） |
 |---|---|
-| 依赖 | 只用标准库（含 `socket`/`ssl`/`subprocess` 起浏览器） |
-| 凭据 | `<工作区根>/config/xhs_<account>.txt`，一行 `name=value; name=value; …` |
-| 输出 | `<工作区根>/tmp/xhs-import.json` |
-| `login` | 默认借浏览器扫码（§5.3）；`--cookie "…"` 可直接粘贴导入（应急） |
-| `fetch` | 纯 HTTP + cookie：`note/analyze/list` 翻页 → 可选 `note/base` 补单篇 → 账号概览 |
-| 降级 | 纯 HTTP 若遇 406，提示改 `--browser` 模式（页面内 `fetch`，签名由页面负责） |
-| 节流 | ≥0.35 s / 请求，与 B站一致；`code != 0` 不重试，传输错误重试 2 次 |
-| 退出码 | 0 成功 / 1 一般错误 / 2 凭据失效（401 `code:-100`）/ 3 风控（406 或其他风控码）/ 4 二维码超时 |
+| 依赖 | 只用标准库（`zipfile` + `xml.etree.ElementTree` 解 xlsx；`subprocess` + `socket` 起浏览器） |
+| 凭据 | `<工作区根>/config/xhs_<account>.txt`，一行 `name=value; name=value; …`（只读取、不回显） |
+| 输出 | 默认 `<工作区根>/tmp/xhs-notes-<时间>.json`，`--out` 可改，`--dump` 另存原始导出表行 |
+| `login` | 借浏览器扫码（§5.3），拿到 `web_session` 即写凭据 |
+| `fetch` | 起浏览器 → 灌 cookie → 开数据分析页 → 点「导出数据」→ 等下载 → 解析 xlsx → 写契约 JSON |
+| 浏览器 | 默认可见窗口（导出按钮要点，页面状态更稳），`--headless` 也可跑通（实测） |
+| 节流/重试 | 只有一次页面加载 + 一次点击，不需要节流；下载超时按 `--timeout`（默认 120s） |
+| 退出码 | 0 成功 / 1 一般错误 / 2 凭据失效 / 3 风控或页面异常 / 4 下载超时 |
+| 已知限制 | 导出只给排序后前 1000 条；没有 note_id 与链接（见 §6） |
 
 ---
 
-## 8. 待实测清单
+## 8. 已打通 / 待实测
 
-- [ ] 登录态下 `note/analyze/list` 的真实请求参数与 `data` 字段名（本页 §6 依赖它）
-- [ ] 登录态下 galaxy 是否仍不校验 `X-S-Common`（决定 `--browser` 模式是不是必需）
-- [ ] `page_size` 上限、`sort` / `type` / 时间范围枚举的合法取值
-- [ ] `note/base` 的单篇参数名与返回结构
-- [ ] `web_session` 有效期、失效表现（是 401 `code:-100` 还是 `登录已过期`）
-- [ ] 图文与视频笔记在列表里的类型字段差异（`type` 枚举）
+已打通（2026-11-18 实测）：
+
+- [x] 扫码登录 → `config/xhs_main.txt`（14 个 cookie 字段），自查页面显示登录态
+- [x] 导出按钮下载 xlsx（4193 字节 / 2 篇笔记），解析出 13 列
+- [x] `fetch --headless` 全链路跑通，产出契约 JSON，插件的 `normalizeImport` 映射正确（`play=74/132`、`extras={impressions:369, cover_click_rate:3.7, view_time:6}`）
+- [x] galaxy 网关登录态下的签名行为（§4.3）
+
+待实测（不阻塞，记下来省下次重找）：
+
+- [ ] `page_size` 上限、`sort_type` / `type` 时间范围枚举的合法取值（要精确筛选时才有用）
+- [ ] `note/base?noteId=` 的返回结构（想补单篇详情、拿真 note_id 时用）
+- [ ] `web_session` 有效期与失效表现（是 401 `code:-100` 还是页面弹登录框）
+- [ ] 超过 1000 条笔记时导出的实际行为（截断还是分片）
+- [ ] 图文笔记在导出表里的「体裁」原文（当前样本只有视频）
