@@ -16,7 +16,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | 不做 | 原因 |
 |---|---|
 | 上传 / 代发布自动化 | 四平台对个人号的发布接口基本关着（B站要企业资质、小红书只开 `basic_info`、抖音代投稿 2024-07 起收回） |
-| 抓数据（插件内部） | 插件必须不联网，见 §5。B站采集放在**独立 Python 脚本** `scripts/bili_sync.py`（另一进程、可单独跑），产出 JSON 后由工具的 `import_bili` 纯离线灌入；插件运行时仍然一个请求都不发 |
+| 抓数据（插件内部） | 插件必须不联网，见 §5。采集放在**独立 Python 脚本**里（B站 `scripts/bili_sync.py`、小红书 `scripts/xhs_sync.py`；另一进程、可单独跑），产出 JSON 后由工具的 `import_bili` / `import_xhs` 纯离线灌入；插件运行时仍然一个请求都不发 |
 | 多账号矩阵、团队协作、权限 | 用户自述「我最多两账号，都是个人号」 |
 | 独立 Web 应用 / 仓库内 CLI | 用户已明确否掉这两种形态，选了 DSH 插件 |
 
@@ -34,6 +34,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | `lib/metrics.js` | 时间解析、快照取最新、中位数、`buildRows`、互动率、`buildReport` |
 | `lib/pack.js` | 发布包：标题字数、标签归一截断、封面比例校验 |
 | `lib/bilibili.js` | B站采集产出的 JSON → 台账记录（纯函数映射：`normalizeImport` / `toPostRecord` / `toMetricRecord` / `matchPost`；不联网、不读盘，输入输出都是普通对象） |
+| `lib/xiaohongshu.js` | 小红书导出产出的 JSON → 台账记录（同上四件纯函数；口径差在观看量≠曝光量、封面点击率 0~100、涨粉进 `fans`、合成 id 不拼假链接） |
 | `lib/tool.js` | 工具定义：参数 schema、action 分发、错误收敛成 `{ ok:false, error }` |
 | `lib/panel.js` | 面板数据整形：`toPanelPost` / `buildFacets`（平台 → 账号两级树）/ `buildPanel`（每个切片一份 `buildReport`，**不另算一套指标**）/ `parseSlice` |
 | `lib/bridge.js` | Host 侧面板桥：`GET /api/dsh-media-ledger/state`（面板数据）、`POST .../sidebar`（写开关）；`sidebarEnabled` / `readPanel` / `saveSidebar` |
@@ -46,6 +47,10 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | `test/smoke.mjs` | 纯函数 + 包结构冒烟（不装插件就能跑） |
 | `test/activate.mjs` | 假 `ctx` 跑 `apply`，验注册 / 执行 / 渲染 / 错误路径 / 回收 |
 | `scripts/bili_sync.py` | **仓库外跑**的 B站采集脚本（`login` 扫码 / `fetch` 抓数据出 JSON）：独立进程、只用标准库、不 import 插件代码；插件本体仍不联网（见 §5） |
+| `scripts/xhs_sync.py` | **仓库外跑**的小红书采集脚本（`login` 扫码 / `fetch` 走页面「导出数据」拿 xlsx 再解析成 JSON）：独立进程、只用标准库；签名绑 query 逆不动，别再试纯 HTTP 翻页（见 `docs/XHS_API.md` §4.3） |
+| `scripts/xhs_login.py` | 小红书扫码登录：借本机 Chrome/Edge 起临时 profile，等 `web_session` 落进 cookie 即写凭据 |
+| `scripts/xhs_browser.py` | 最小 CDP 客户端（起浏览器、`Runtime.evaluate`、`Network.setCookies`、等 cookie、收下载）：只用标准库，按自己起的 PID 收尾 |
+| `docs/XHS_API.md` | 小红书数据分析页接口实测笔记（含导出表的列与口径） |
 | `scripts/README.md` | 采集脚本的用法、接口清单、退出码与口径说明 |
 
 ---
@@ -60,7 +65,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 104/104**（含面板整形与筛选树、桥路由、客户端 bundle 契约、B站 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
+- 期望：`smoke.mjs` → **全过 122/122**（含面板整形与筛选树、桥路由、客户端 bundle 契约、B站/小红书 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、`import_xhs` 端到端、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 
