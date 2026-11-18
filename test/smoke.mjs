@@ -21,7 +21,7 @@ import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/b
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
 import { BRIDGE_PREFIX, boundAccountsOf, listCredentialFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
-import { LOGIN_TIMEOUT_MS, LOGIN_TARGETS, buildLoginPlan, describeLoginState, extractQrPath, filterLoginLog, sanitizeAccount } from '../lib/login.js';
+import { LOGIN_TIMEOUT_MS, LOGIN_TARGETS, buildLoginPlan, describeLoginState, extractQrPath, filterLoginLog, loginSpawnEnv, sanitizeAccount } from '../lib/login.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -463,6 +463,17 @@ check(
 const qrSample = path.join(panelDir, 'bili-qr-main.png');
 check('从日志里抓得到二维码图片路径', extractQrPath('  二维码图片：' + qrSample) === qrSample, String(extractQrPath('  二维码图片：' + qrSample)));
 check('日志里的凭据值被丢掉', filterLoginLog('a\nSESSDATA=leak\nb').split('\n').join(',') === 'a,b', filterLoginLog('a\nSESSDATA=leak\nb'));
+// —— 起登录脚本的子进程环境：中文 Windows 上不强制 UTF-8，面板日志就是一片「���� Bվ…」 ——
+const spawnEnvBase = { PATH: 'C:/fake-python', PYTHONIOENCODING: 'gbk', PYTHONUTF8: '0' };
+const spawnEnv = loginSpawnEnv(spawnEnvBase);
+check(
+  'loginSpawnEnv 强制 UTF-8（覆盖调用方原来的编码设置）',
+  spawnEnv.PYTHONIOENCODING === 'utf-8' && spawnEnv.PYTHONUTF8 === '1' && spawnEnv.PYTHONUNBUFFERED === '1',
+  JSON.stringify({ a: spawnEnv.PYTHONIOENCODING, b: spawnEnv.PYTHONUTF8, c: spawnEnv.PYTHONUNBUFFERED }),
+);
+check('loginSpawnEnv 保留其余环境变量', spawnEnv.PATH === 'C:/fake-python', spawnEnv.PATH);
+check('loginSpawnEnv 不改入参', spawnEnvBase.PYTHONIOENCODING === 'gbk' && spawnEnvBase.PYTHONUTF8 === '0', JSON.stringify(spawnEnvBase));
+check('loginSpawnEnv 空入参也不炸', loginSpawnEnv().PYTHONIOENCODING === 'utf-8', loginSpawnEnv(null).PYTHONIOENCODING);
 check('log 只留尾部 2000 字符', describeLoginState({ phase: 'failed', log: 'x'.repeat(5000) }).log.length === 2000, String(describeLoginState({ phase: 'failed', log: 'x'.repeat(5000) }).log.length));
 
 const routes = makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir });
