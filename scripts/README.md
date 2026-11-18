@@ -62,6 +62,7 @@ python -m pip install qrcode pillow   # 只在你要用 login --qr 时安装
 | 用途 | 位置 |
 |---|---|
 | 凭据（cookie） | `<工作区根>\config\bilibili_<account>.txt` |
+| 身份旁路文件（`login` 验证通过后写入，只有昵称 / mid / 等级） | `<工作区根>\config\bilibili_<account>.identity.json` |
 | 登录二维码图片（仅 `login --qr`） | `<工作区根>\tmp\bili-qr-<account>.png` |
 | `fetch` 默认输出 | `<工作区根>\tmp\bili-import.json` |
 | `--out` 相对路径 | 按**当前工作目录**解析（不是按脚本目录） |
@@ -92,6 +93,10 @@ python scripts/bili_sync.py login --account work
    把 cookie 序列化成一行 `k=v; k=v` 写进 `<工作区根>\config\bilibili_<account>.txt`
    （UTF-8、无 BOM、无换行结尾），最后调 `nav` 接口验证 `isLogin == true`，
    打印 `昵称(mid)` 与 `level` 后返回 0。
+5. 顺手把这次 `nav` 校验到的身份写进 `<工作区根>\config\bilibili_<account>.identity.json`
+   （`{platform, account, uname, mid, level, saved_at}`，UTF-8、缩进 2），写不进去只打一行警告、
+   不影响登录成功。**它不是凭据**：里面没有任何 cookie，只是让面板知道 `main` 这个别名背后是哪个号
+   （两个号都存成 `main` 时不会再分不清谁是谁）。
 
 **退路 `login --qr`**：不借浏览器，直接打 B站二维码接口、用 `qrcode` 渲染成 PNG 存到
 `<工作区根>\tmp\bili-qr-<account>.png`，终端打印图片路径与二维码内容 URL（URL 里带 `qrcode_key`，
