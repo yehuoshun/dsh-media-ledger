@@ -77,6 +77,8 @@
 | `list` | 查台账（可按平台筛） | — |
 | `report` | 出复盘 | —（可选 `group_by`、`max_age_hours`） |
 | `pack` | 生成发布包 | `platform`、`title` |
+| `import_bili` | 灌 B站采集 JSON | `path`（可 `dry_run`） |
+| `import_xhs` | 灌小红书采集 JSON | `path`（可 `dry_run`） |
 
 数字可以直接写平台显示值：`2.4w`、`1.2万`、`3,456`、`12k` 都会换算，读不懂时报错而不是记 0。
 
@@ -119,9 +121,9 @@ media(action: "report", group_by: "kind")
 2. **用中位数不用均值**：一条爆款就能把均值拉到没有参考价值；
 3. **互动率只在「同一条快照里同时有播放和互动」的行上算**，分子分母同批，否则会算出 10050%；混龄期的数不可比，用 `max_age_hours` 取同一批。
 
-## B站数据同步（采集脚本在插件外）
+## 平台数据同步（采集脚本在插件外）
 
-插件本体不联网（见「隐私」一节），所以 B站后台数据走**两步**，中间用一份 JSON 交接：
+插件本体不联网（见「隐私」一节），所以后台数据走**两步**，中间用一份 JSON 交接。
 
 ```powershell
 # 1. 采集（独立 Python 脚本，不依赖第三方库；凭据放工作区根的 config/bilibili_main.txt）
@@ -144,6 +146,21 @@ media { action: "import_bili", path: "…", dry_run: true }   # 先看会新建/
 | `archive.play.view` | 结算后的**去重**观看数 |
 
 所以 `import_bili` 把实时的 `realtime.*` 写进 `play/like/comment/share/collect`，把结算值与 diagnose 画像整块塞进 `extras`（`settled` / `diagnose`），两边都不丢、也不混着比。另有两条降级规则：`archive.stat` 可能是 `null`（刚发布/刚过审），此时不写 0 而记警告；`area`、`playsource` 可能返回 `null`（后者已废弃，平台占比改看 `diagnose.play_proportion`）。`archive_diagnose/compare` 的 `not_ready_field` 里的指标是「还没算好」，同样不能当真实的 0。
+
+### 小红书数据同步
+
+小红书和前三个平台都不一样：**每个数据接口都要 `x-s` 签名，而且签名把 query 绑死了**——原样重放是 200，换任意参数立刻 406，页内的 `_webmsxyw` 又钩不到调用点。所以脚本不逆签名，改借页面自己的「导出数据」按钮：
+
+```powershell
+# 1. 采集（弹一个临时浏览器窗口扫码；之后 fetch 自动灌 cookie、点导出、解析 xlsx）
+python scripts\xhs_sync.py login --account main --timeout 600
+python scripts\xhs_sync.py fetch --account main --name 你的昵称   # → <工作区根>\tmp\xhs-notes-<时间>.json
+
+# 2. 入库（import_xhs，同样纯离线）
+media { action: "import_xhs", path: "<工作区根>\tmp\xhs-notes-<时间>.json" }
+```
+
+口径要点：**观看量进 `play`，曝光量只进 `extras.impressions`**（导出两列都给，混了就失真）；封面点击率导出是 0~1 小数，统一 ×100 记 0~100；涨粉进 `fans`；图文与视频分开记 `kind`。导出表里**没有 note_id 也没有链接**，`platform_id` 由 `sha1(标题|发布时间)` 派生（以 `xhs` 开头），合成 id 不拼 `explore` 链接——那地址点开是 404。上限是「排序后前 1000 条」。接口实测细节见 [`docs/XHS_API.md`](docs/XHS_API.md)。
 
 
 
@@ -176,6 +193,7 @@ lib/store.js       JSONL 读写（BOM 容错、坏行报行号、重复 id 报�
 lib/metrics.js     时间解析、最新快照、中位数、互动率、分组报告
 lib/pack.js        发布包文本 + 标题/话题/封面的机械校验
 lib/bilibili.js    B站采集产出的 JSON → 台账记录（纯函数映射，不联网）
+lib/xiaohongshu.js 小红书导出产出的 JSON → 台账记录（纯函数映射，不联网）
 lib/tool.js        唯一工具 media（action 分派）
 lib/panel.js       面板数据整形（筛选树 facets + 每个切片的复盘，只搬运 metrics 的口径，不另算指标）
 lib/bridge.js      Host 侧面板桥：/api/dsh-media-ledger/state 与 /sidebar
@@ -186,7 +204,11 @@ docs/DETAIL.md     插件详情页（恰好一行图片，英文）
 docs/DETAIL.zh.md  插件详情页（中文）
 docs/preview.svg   详情页示意图
 docs/DESIGN.md     设计取舍与后续
+docs/XHS_API.md    小红书数据分析页接口实测（签名为什么逆不动、导出表怎么解析）
 scripts/bili_sync.py       B站采集脚本（独立进程，插件本体不联网）
+scripts/xhs_sync.py        小红书采集脚本（走页面导出 xlsx）
+scripts/xhs_login.py       小红书扫码登录（借本机浏览器 CDP）
+scripts/xhs_browser.py     最小 CDP 客户端（起 Chrome/Edge、灌 cookie、点按钮、收下载）
 scripts/README.md          采集脚本的用法、接口清单与口径说明
 AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私、详情页契约、验收命令）
 ```
@@ -201,7 +223,7 @@ AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私�
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约 + 详情页校验，全过 106/106
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约（含真跑一遍）+ 详情页校验，全过 124/124
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
@@ -213,4 +235,5 @@ $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自�
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
 - 左侧栏面板已做（0.4.0）：左导航（台账 / 复盘切换 + 平台 → 账号两级筛选）+ 右内容（当前切片的台账或复盘），页内「在左侧栏显示」开关写回 `sidebar` 配置。数据走两条本机路由，不联网。
 - B站数据同步已做（0.3.0）：`scripts/bili_sync.py` 采集（独立进程、扫码登录、只读），`import_bili` 纯离线灌进台账；实时/结算两套口径分开存，图片与地区画像进 `extras`。真账号跑过 3 条稿件，重跑幂等。
+- 小红书数据同步已做：扫码登录（借本机浏览器）→ 页面「导出数据」下 xlsx → `scripts/xhs_sync.py` 解析成 JSON → `import_xhs` 灌进台账。真账号跑过 2 条笔记；签名逆不动这件事写进了 [`docs/XHS_API.md`](docs/XHS_API.md)。
 - npm 包名待定（`dsh-media-ledger` 这个名字在 npm 上可用，但暂不发布）。

@@ -134,6 +134,31 @@ const shapeOk = Boolean(panelPayload.facets)
   && panelPayload.truncated === false;
 console.log(`面板切片 → ${shapeOk ? 'facets + 两级切片 ✓' : JSON.stringify(panelPayload.facets || panelPayload)}`);
 
+// import_xhs：走 tool.execute，验 action 分发 + 建档 + 快照落盘（放在面板断言之后，免得改动切片数量）
+const xhsFile = path.join(os.tmpdir(), `ml-xhs-import-${Date.now()}.json`);
+fs.writeFileSync(xhsFile, JSON.stringify({
+  platform: 'xhs',
+  account: { name: 'mock-xhs' },
+  generated_at: '2026-11-18 01:20',
+  notes: [{
+    note_id: 'mocknote0001',
+    title: 'mock 小红书笔记',
+    kind: '图文',
+    published_at: '2026-11-10 12:00',
+    metrics: { play: 1200, like: 34, collect: 12, comment: 5, share: 2, fans: 3 },
+    extras: { impressions: 8000 },
+  }],
+}), 'utf8');
+const imported = await tool.execute({ action: 'import_xhs', path: xhsFile });
+fs.rmSync(xhsFile, { force: true });
+const importOk = imported.ok === true
+  && imported.platform === 'xhs'
+  && imported.createdCount === 1
+  && imported.updatedCount === 1
+  && imported.updated[0].note_id === 'mocknote0001'
+  && imported.updated[0].play === 1200;
+console.log(`import_xhs → 新建 ${imported.createdCount} 条 / 更新 ${imported.updatedCount} 条${importOk ? ' ✓' : ` ✗ ${JSON.stringify(imported)}`}`);
+
 const serialized = JSON.stringify(report) + JSON.stringify(pack);
 const ok = report.groups.length === 1
   && list.total === 1
@@ -141,7 +166,8 @@ const ok = report.groups.length === 1
   && !serialized.includes('undefined')
   && bridgeCount === 2
   && hintOk
-  && shapeOk;
+  && shapeOk
+  && importOk;
 
 for (const dispose of cleaned) dispose();
 const recycled = tool.disposed === true && bridgeRoutes.length === 0;

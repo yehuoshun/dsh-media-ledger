@@ -1,11 +1,19 @@
-# scripts —— B站创作中心采集器
+# scripts —— 采集器（B站 / 小红书）
 
-一个**独立的 Python 脚本**，负责「登录 B站 + 把创作中心的数据抓成本地 JSON」这一件事。
-插件本体不碰它、不 import 它，两边只通过一个 JSON 文件交接。
+**独立的 Python 脚本**，负责「登录 + 把创作中心的数据抓成本地 JSON」这一件事。
+插件本体不碰它们、不 import 它们，两边只通过一个 JSON 文件交接。
 
 ```
-Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/bili-import.json  →  插件导入
+Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/<平台>-import.json  →  插件导入
 ```
+
+| 脚本 | 平台 | 工具 action | 凭据 |
+|---|---|---|---|
+| `bili_sync.py` | B站 | `import_bili` | `config/bilibili_<account>.txt` |
+| `xhs_sync.py` | 小红书 | `import_xhs` | `config/xhs_<account>.txt` |
+
+两个脚本各自独立（没有共享的 utils 模块），只有小红书那套互相引用：`xhs_sync.py`（入口）→
+`xhs_login.py`（扫码）→ `xhs_browser.py`（起本机 Chrome，CDP 直通）。用法与退出码见下文。
 
 ## 为什么采集器是独立脚本，而插件本体不联网
 
@@ -196,6 +204,61 @@ B站的风控是**按账号/IP 计分**的，连续快速请求会先软失败�
   $env:PYTHONUTF8='1'; [Console]::OutputEncoding=[Text.Encoding]::UTF8
   ```
 - **微信/QQ 扫不出来**：必须用 B站手机客户端扫；别用第三方扫码工具，扫完也不会确认登录。
+
+## 小红书：`xhs_sync.py`
+
+### 为什么和 B站 完全不是一套
+
+B站的接口自带签名白名单、裸 HTTP 带 cookie 就能过；小红书**每个数据接口都要 `x-s` 签名，而签名把
+query 绑死了**——抓到真实请求原样重放是 200，换任意参数（哪怕删掉时间参数）立刻 406。页面里的
+`window._webmsxyw` 能算出签名，但它被模块闭包持有，外部包一层钩不到调用（详见 `docs/XHS_API.md` §4.3）。
+
+所以采集**不逆签名**，改走页面自己的「导出数据」按钮：下载 `笔记列表明细表.xlsx`，本地解析。
+浏览器只负责灌 cookie、点按钮、收文件，数据解析全在本地。
+
+### 用法
+
+```powershell
+# 1. 扫码登录（弹一个临时浏览器窗口，用小红书 App 扫；成功写 config\xhs_main.txt）
+python scripts\xhs_sync.py login --account main --timeout 600
+
+# 2. 采集（起浏览器 → 点导出 → 解析 xlsx → 写 JSON）
+python scripts\xhs_sync.py fetch --account main --name 你的昵称
+
+# 可选：无头跑、限制条数、另存原始导出表行
+python scripts\xhs_sync.py fetch --account main --name 你的昵称 --headless --max 200 --dump
+
+# 3. 入库（DSH 里调工具）
+media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
+```
+
+| 参数 | 作用 |
+|---|---|
+| `--account` | 账号简称，决定凭据文件名（默认 `main`） |
+| `--name` | 台账里的账号名（省略则用昵称兜底，取不到就问你要） |
+| `--headless` | 无头跑（实测可行；默认弹窗，页面状态更稳） |
+| `--max N` | 只取导出表里的前 N 条 |
+| `--out` | 输出 JSON 路径，默认 `<工作区根>\tmp\xhs-notes-<时间>.json` |
+| `--dump` | 另存原始导出表行（排查字段用） |
+| `--keep-workbook` | 保留下载的 xlsx |
+| `--timeout` | 等下载的超时秒数（默认 120） |
+
+### 口径（和 B站 不一样的地方）
+
+- **观看量不是曝光量**：`play` 只取「观看量」，「曝光」进 `extras.impressions`。导出把两列都给了，别混。
+- **封面点击率**导出是 0~1 小数（`0.037`），台账统一 0~100，脚本 ×100 后写 `extras.cover_click_rate`。
+- **涨粉**进 `fans`（B站那边没有这一列）。
+- **图文 / 视频**分开记 `kind`，导出「体裁」列直接说。
+- **没有 note_id、没有链接**：导出表里两样都没有。`note_id` 由 `sha1(标题|发布时间)[:14]` 派生（以 `xhs` 开头），
+  所以改标题会被当成新作品；合成 id **不拼 `explore/<id>` 链接**——那地址点开就是 404，宁可空着。
+- 导出上限是「排序后前 1000 条笔记」，页面自己写的提示。
+
+### 已知的接口脾气
+
+- **导出按钮要等页面渲染完**：脚本按文本精确匹配「导出数据」才点，等不到就报退出码 3，别以为是风控。
+- **GBK 控制台遇 emoji 会炸**：标题里有 📚 这类字符时 `print` 曾抛 `UnicodeEncodeError`，脚本已把
+  stdout/stderr 设成 `errors="replace"`；要正常看中文仍建议 `$env:PYTHONUTF8='1'`。
+- **临时 profile 会被占用**：脚本按自己起的浏览器 PID 收尾；上一次异常退出留下的 `xhs-chrome-*` 目录可以直接删。
 
 ## 安全与隐私
 
