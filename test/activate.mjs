@@ -131,7 +131,12 @@ const shapeOk = Boolean(panelPayload.facets)
   && panelPayload.reports['platform:douyin'].groupBy === 'account'
   && panelPayload.reports['account:douyin|主号'].groupBy === 'kind'
   && panelPayload.postsTotal === 1
-  && panelPayload.truncated === false;
+  && panelPayload.truncated === false
+  && Array.isArray(panelPayload.platforms)
+  && panelPayload.platforms.length === 4
+  && panelPayload.bindings
+  && panelPayload.bindings.platforms.length === 4
+  && panelPayload.bindings.platforms.every((item) => typeof item.statusText === 'string' && item.statusText.length > 0 && Array.isArray(item.steps));
 console.log(`面板切片 → ${shapeOk ? 'facets + 两级切片 ✓' : JSON.stringify(panelPayload.facets || panelPayload)}`);
 
 // import_xhs：走 tool.execute，验 action 分发 + 建档 + 快照落盘（放在面板断言之后，免得改动切片数量）

@@ -15,11 +15,12 @@ import { buildPack } from '../lib/pack.js';
 import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
-import { buildPanel, parseSlice, POST_LIMIT } from '../lib/panel.js';
+import { buildPanel, parseSlice, platformList, POST_LIMIT } from '../lib/panel.js';
+import { describeBindings, formatSavedAt, parseCredentialName, bindingSteps } from '../lib/bindings.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
-import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
+import { BRIDGE_PREFIX, listCredentialFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -328,6 +329,64 @@ const panelPayload = readPanel({ dataDir: panelDir });
 check('桥读出的台账目录是配置那个', panelPayload.dataDir === panelDir && panelPayload.ok === true, panelPayload.dataDir);
 check('桥的 payload 带复盘和列表', panelPayload.posts.length === 2 && panelPayload.report.total === 2 && panelPayload.sidebar === true);
 check('桥没有坏行时 errors 为空', Array.isArray(panelPayload.errors) && panelPayload.errors.length === 0);
+
+// —— 绑定状态：面板靠 config/ 里的文件名说「这个平台接没接上」——
+check(
+  '凭据文件名能解析出平台与账号',
+  parseCredentialName('bilibili_main.txt').platform === 'bilibili' && parseCredentialName('bilibili_main.txt').account === 'main',
+  JSON.stringify(parseCredentialName('bilibili_main.txt')),
+);
+check(
+  '认不出的凭据名不猜',
+  parseCredentialName('bilibili.txt') === null
+    && parseCredentialName('xhs_.txt') === null
+    && parseCredentialName('notes.md') === null
+    && parseCredentialName('other_main.txt') === null,
+  JSON.stringify([
+    parseCredentialName('bilibili.txt'),
+    parseCredentialName('xhs_.txt'),
+    parseCredentialName('notes.md'),
+    parseCredentialName('other_main.txt'),
+  ]),
+);
+const nowStamp = new Date('2026-11-18T12:00:00Z').getTime();
+check(
+  '存证时间说成人话',
+  formatSavedAt(nowStamp - 3600e3, nowStamp) === '今天'
+    && formatSavedAt(nowStamp - 26 * 3600e3, nowStamp) === '昨天'
+    && formatSavedAt(nowStamp - 5 * 86400e3, nowStamp) === '5 天前',
+  [formatSavedAt(nowStamp, nowStamp), formatSavedAt(nowStamp - 26 * 3600e3, nowStamp), formatSavedAt(nowStamp - 5 * 86400e3, nowStamp)].join(','),
+);
+const bindingList = describeBindings([
+  { name: 'bilibili_main.txt', mtimeMs: nowStamp },
+  { name: 'bilibili_小号.txt', mtimeMs: nowStamp - 86400e3 },
+  { name: 'notes.md', mtimeMs: nowStamp },
+]).platforms;
+check('四个平台恒在四条', bindingList.map((item) => item.key).join(',') === 'douyin,xhs,bilibili,shipinhao', bindingList.map((item) => item.key).join(','));
+check(
+  '有凭据＝已绑定并列账号（新的在前）',
+  bindingList[2].status === 'ready'
+    && bindingList[2].credentials.map((item) => item.account).join(',') === 'main,小号'
+    && bindingList[2].credentials[0].savedAt === '今天',
+  JSON.stringify(bindingList[2]),
+);
+check(
+  '没凭据＝未绑定并给出下一步',
+  bindingList[0].status === 'unbound' && bindingList[0].credentials.length === 0 && bindingList[0].steps.length === 3
+    && bindingList[0].steps[1].includes('scripts/douyin_sync.py')
+    && bindingList[0].statusText.includes('douyin_'),
+  JSON.stringify(bindingList[0]),
+);
+check(
+  '空态三步文案直接来自 bindingSteps',
+  bindingList[0].steps.join('|') === bindingSteps('douyin').join('|') && bindingSteps('shipinhao').join('|') === bindingList[3].steps.join('|'),
+  JSON.stringify(bindingSteps('douyin')),
+);
+check(
+  '没有采集脚本＝未接入',
+  bindingList[3].status === 'no-collector' && bindingList[3].credentials.length === 0 && bindingList[3].steps.length === 2,
+  JSON.stringify(bindingList[3]),
+);
 check(
   '桥的 payload 带筛选树与切片复盘',
   panelPayload.facets && panelPayload.facets.total === 2
@@ -352,6 +411,33 @@ const stateRes = fakeRes();
 routes[0].handler({ method: 'GET' }, stateRes);
 const stateBody = JSON.parse(stateRes.body);
 check('GET state 返回 ok 与面板数据', stateRes.statusCode === 200 && stateBody.ok === true && stateBody.posts.length === 2, stateBody.error || '');
+
+// 绑定状态走真目录：config/ 里只认 .txt，且只取名字与时间（绝不读内容）
+const wsDir = path.join(dir, 'binding-ws');
+fs.mkdirSync(path.join(wsDir, 'code'), { recursive: true });
+fs.mkdirSync(path.join(wsDir, 'config'), { recursive: true });
+fs.writeFileSync(path.join(wsDir, 'AGENTS.md'), '# mock workspace\n', 'utf8');
+fs.writeFileSync(path.join(wsDir, 'config', 'douyin_main.txt'), 'mock-cookie-not-real\n', 'utf8');
+fs.writeFileSync(path.join(wsDir, 'config', 'notes.md'), 'mock notes\n', 'utf8');
+const creds = listCredentialFiles({ workspaceRoot: wsDir });
+check(
+  '扫 config 只认 .txt 且只带名字与时间',
+  creds.dir === path.join(wsDir, 'config')
+    && creds.entries.map((entry) => entry.name).join(',') === 'douyin_main.txt'
+    && Object.keys(creds.entries[0]).sort().join(',') === 'mtimeMs,name',
+  JSON.stringify(creds),
+);
+const boundPayload = readPanel({ dataDir: panelDir, workspaceRoot: wsDir });
+check(
+  '桥的 payload 带绑定状态',
+  boundPayload.ok === true
+    && boundPayload.bindings.configDir === path.join(wsDir, 'config')
+    && boundPayload.bindings.platforms.length === 4
+    && boundPayload.bindings.platforms[0].status === 'ready'
+    && boundPayload.platforms.length === 4,
+  JSON.stringify(boundPayload.bindings),
+);
+check('没有 config 目录也算「一个都没绑」', listCredentialFiles({ workspaceRoot: path.join(dir, 'no-such-ws') }).entries.length === 0);
 const wrongMethodRes = fakeRes();
 routes[0].handler({ method: 'POST' }, wrongMethodRes);
 check('GET state 拒绝别的 method', wrongMethodRes.statusCode === 405, String(wrongMethodRes.statusCode));
@@ -385,6 +471,19 @@ check('不 require 任何 dsh-client-* 包', !/require\(\s*['"]@deepseek-ai\/dsh
 check('侧栏 id 与主区域 key 是同一个常量', /const PANEL_ID = 'dsh-media-ledger'/.test(clientText) && clientText.includes('id: PANEL_ID') && clientText.includes('key: PANEL_ID'));
 check('客户端只连本机桥，没有外网地址', !/https?:\/\//.test(clientText) && clientText.includes("const BRIDGE = 'api/dsh-media-ledger'"));
 check('客户端不碰文件系统', !/require\('node:/.test(clientText) && !/from 'node:/.test(clientText));
+// 左栏四平台 + 绑定状态：吞掉这几条，用户就会又一次「点进去看啥都没有」
+check(
+  '左栏吃 Host 的四平台列表与绑定状态',
+  clientText.includes('data.platforms') && clientText.includes('data.bindings') && /function SideNav\(\{[^}]*platforms[^}]*bindings/.test(clientText),
+);
+check(
+  '空态先说为什么空再给步骤',
+  clientText.includes('function EmptyState') && clientText.includes('binding.statusText') && clientText.includes('binding.steps'),
+);
+check(
+  '绑定标签按状态给三种文案',
+  clientText.includes("'已绑定'") && clientText.includes("'未绑定'") && clientText.includes("'未接入'"),
+);
 
 // 光看源码文本不够：语法错或 apply 里写错，页面上是白屏，文本断言一条都不会响。
 // 这里用 vm 把 bundle 真跑一遍（stub 掉 window / document / React），确认它能 load 并注册出两个入口。
@@ -548,6 +647,18 @@ check(
   JSON.stringify(tree.facets.platforms[0].accounts),
 );
 check('空账号不单列成节点', tree.facets.platforms[1].accounts.length === 0 && tree.facets.platforms[1].count === 1);
+check(
+  '左栏平台列表恒含四平台（0 条也列）',
+  platformList(treeRows).map((item) => `${item.key}:${item.count}`).join(',') === 'douyin:3,xhs:1,bilibili:0,shipinhao:0',
+  JSON.stringify(platformList(treeRows)),
+);
+check(
+  '空平台也有切片复盘（点进去不炸）',
+  tree.reports['platform:bilibili'].total === 0
+    && tree.reports['platform:bilibili'].groupBy === 'account'
+    && tree.reports['platform:shipinhao'].total === 0,
+  Object.keys(tree.reports).join(','),
+);
 check('没填平台的老记录单独一桶', tree.facets.unassigned === 1 && tree.facets.total === 5, JSON.stringify(tree.facets));
 check(
   '切片复盘与整体同口径',
