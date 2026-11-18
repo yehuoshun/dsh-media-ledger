@@ -551,17 +551,20 @@ class BrowserSession:
                     cookies[name] = item.get("value") or ""
         return cookies
 
-    def wait_cookie(self, name, timeout=300, interval=2.0, on_tick=None):
+    def wait_cookie(self, name, timeout=300, interval=2.0, on_tick=None, domain_suffix="xiaohongshu.com"):
         """轮询直到 cookie `name` 出现，返回整份 cookie_dict；超时抛 BrowserError（带已等秒数）。
 
         on_tick(elapsed, cookies) 每轮调一次，方便调用方打印进度（比如「已等 30 秒」）。
+
+        `domain_suffix` 必须传给 `cookie_dict`——早先这里漏传，默认只认 xiaohongshu.com，
+        拿别的站点（比如 B站）复用本类时永远等不到 cookie、只能等超时。2026-11-18 补。
         """
         start = time.monotonic()
         timeout = float(timeout)
         interval = max(0.2, float(interval))
         cookies = {}
         while True:
-            cookies = self.cookie_dict()
+            cookies = self.cookie_dict(domain_suffix)
             if cookies.get(name):
                 return cookies
             elapsed = time.monotonic() - start

@@ -12,8 +12,9 @@
     fetch   拉取稿件列表 + 每个稿件的三份数据 + 实时互动数，产出 <工作区根>/tmp/bili-import.json
 
 约定：
-    - 只用标准库；sign 之外唯一的可选依赖是 qrcode/pillow（只在 login 里懒加载，用来把二维码
-      渲染成 PNG）。没装它们也能登：login 会退回用浏览器打开同一个扫码地址，fetch 完全不付这个开销；
+    - 只用标准库 + 仓库内的 scripts/xhs_browser.py（纯标准库的 CDP 小工具）。默认 login 借本机
+      Chrome/Edge 打开 B站官方登录页扫码，不需要任何第三方包；--qr 是「纯 HTTP 申请二维码并渲染
+      成 PNG」的退路，只有它需要可选的 qrcode/pillow（懒加载），fetch 完全不付这个开销；
     - cookie 值永不打印，只打印字段名与长度；
     - 工作区根从本文件向上找「同层既有 AGENTS.md 又有 code/」的目录，代码里不写死盘符路径；
     - 缺失字段写 null，不写 0 冒充；降级情况记进输出 JSON 的 warnings。
@@ -37,7 +38,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +55,17 @@ QRCODE_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode
 QRCODE_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 FINGER_SPI_URL = "https://api.bilibili.com/x/frontend/finger/spi"
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
+
+# login 主路径（借本机浏览器扫码）用的常量。
+# B站官方登录页自己会渲染二维码，所以不需要我们生成图片；登录成功后由 B站自己种 SESSDATA。
+LOGIN_PAGE_URL = "https://passport.bilibili.com/login"
+LOGIN_COOKIE_DOMAIN = "bilibili.com"   # SESSDATA / bili_jct / buvid* / DedeUserID 都在这个域下
+LOGIN_COOKIE_NAME = "SESSDATA"         # 拿到它就等于「扫码 + 手机端确认」都完成了
+BROWSER_READY_TIMEOUT = 20             # 起浏览器后等 CDP 调试端口的秒数（xhs_browser 的 wait_timeout）
+LOGIN_TIMEOUT_DEFAULT = 300.0          # 等扫码的默认上限（秒），可用 --timeout 覆盖
+LOGIN_POLL_INTERVAL = 2.0              # 轮询 cookie 的间隔（秒）
+LOGIN_PROGRESS_EVERY = 10.0            # 每 10 秒打一行进度，别刷屏
+REQUIRED_COOKIE_FIELDS = ("SESSDATA", "bili_jct")   # 缺一个就算没登成（与 load_credential 同一把尺子）
 
 ARCHIVE_INDEX_URL = "https://member.bilibili.com/x/web/data/archive/index"
 ARCHIVE_DETAIL_URL = "https://member.bilibili.com/x/web/data/archive"
@@ -299,18 +310,12 @@ def cookie_to_header(pairs: list[tuple[str, str]]) -> str:
     return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
-def jar_to_pairs(jar: http.cookiejar.CookieJar) -> list[tuple[str, str]]:
-    """把 cookie jar 摊平成有序列表：先按 COOKIE_FIELD_ORDER，其余按名字排序。
+def order_cookie_pairs(collected: dict[str, str]) -> list[tuple[str, str]]:
+    """按 COOKIE_FIELD_ORDER 排序，其余按名字排序（会 pop 掉传入的 dict）。
 
-    同名 cookie 可能有多个（不同 path/domain），后者覆盖前者，最终只留一个。
+    jar 路径与浏览器路径共用这一份顺序：两条 login 写出来的凭据格式必须一模一样，
+    否则 load_credential / 插件那边就成了「换个入口存出来的文件读不了」。
     """
-    collected: dict[str, str] = {}
-    for cookie in jar:
-        value = cookie.value or ""
-        if value == "":
-            continue
-        collected[cookie.name] = value
-
     ordered: list[tuple[str, str]] = []
     for name in COOKIE_FIELD_ORDER:
         if name in collected:
@@ -320,8 +325,42 @@ def jar_to_pairs(jar: http.cookiejar.CookieJar) -> list[tuple[str, str]]:
     return ordered
 
 
+def jar_to_pairs(jar: http.cookiejar.CookieJar) -> list[tuple[str, str]]:
+    """把 cookie jar 摊平成有序列表。
+
+    同名 cookie 可能有多个（不同 path/domain），后者覆盖前者，最终只留一个。
+    """
+    collected: dict[str, str] = {}
+    for cookie in jar:
+        value = cookie.value or ""
+        if value == "":
+            continue
+        collected[cookie.name] = value
+    return order_cookie_pairs(collected)
+
+
 def serialize_jar(jar: http.cookiejar.CookieJar) -> str:
     return cookie_to_header(jar_to_pairs(jar))
+
+
+def browser_cookie_pairs(cookies: dict) -> list[tuple[str, str]]:
+    """把 CDP 读出来的 {name: value} 摊平成有序列表；空值丢掉，缺关键字段按现有校验报错。
+
+    错误信息里只出现字段名，不出现任何值。
+    """
+    collected = {
+        str(name): value
+        for name, value in (cookies or {}).items()
+        if isinstance(value, str) and value
+    }
+    missing = [name for name in REQUIRED_COOKIE_FIELDS if name not in collected]
+    if missing:
+        raise SyncError(
+            f"浏览器里拿到的 cookie 缺少字段 {missing}（bilibili.com 域），"
+            "扫码多半没走完，请重新 login",
+            EXIT_AUTH,
+        )
+    return order_cookie_pairs(collected)
 
 
 def save_credential(account: str, cookie_line: str) -> Path:
@@ -342,7 +381,7 @@ def load_credential(account: str) -> str:
         raise SyncError(f"凭据文件是空的：{path}，请重新 login")
     pairs = parse_cookie_line(text)
     names = [name for name, _ in pairs]
-    missing = [name for name in ("SESSDATA", "bili_jct") if name not in names]
+    missing = [name for name in REQUIRED_COOKIE_FIELDS if name not in names]
     if missing:
         raise SyncError(f"凭据文件缺少字段 {missing}：{path}，请重新 login")
     return cookie_to_header(pairs)
@@ -369,6 +408,157 @@ def describe_cookie_line(line: str) -> str:
 # ---------------------------------------------------------------------------
 # login
 # ---------------------------------------------------------------------------
+
+# 主路径：借本机 Chrome/Edge 扫码。B站官方登录页（passport.bilibili.com/login）自己会渲染二维码，
+# 所以这条路不需要 qrcode/pillow；也不再出现「把手机端 H5 页塞给桌面浏览器」那种假进度。
+
+
+def load_browser_api():
+    """懒加载仓库里的 scripts/xhs_browser.py（纯标准库的 CDP 小工具），只有 login 用得到。
+
+    返回 (BrowserError, BrowserSession, find_browser)。按本文件的同级目录算路径，
+    这样从任何工作目录跑 python scripts/bili_sync.py 都能 import 到它。
+    """
+    script_dir = str(Path(__file__).resolve().parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    try:
+        from xhs_browser import BrowserError, BrowserSession, find_browser  # noqa: PLC0415
+    except ImportError as error:
+        raise SyncError(f"读不到浏览器辅助模块 scripts/xhs_browser.py：{error}") from error
+    return BrowserError, BrowserSession, find_browser
+
+
+def make_progress_printer(total: float):
+    """每 LOGIN_PROGRESS_EVERY 秒打一行进度（只报字段名与个数，绝不打印 cookie 值）。"""
+    state = {"next": LOGIN_PROGRESS_EVERY}
+
+    def tick(elapsed: float, names: list[str]) -> None:
+        if elapsed < state["next"]:
+            return
+        print(
+            f"  等待扫码… 已等 {elapsed:.0f}/{total:.0f} 秒"
+            f"（{LOGIN_COOKIE_DOMAIN} 域已有 cookie {len(names)} 个）",
+            flush=True,
+        )
+        while state["next"] <= elapsed:
+            state["next"] += LOGIN_PROGRESS_EVERY
+
+    return tick
+
+
+def wait_login_cookie(session, timeout: float, interval: float = LOGIN_POLL_INTERVAL, on_tick=None) -> dict:
+    """轮询 bilibili.com 域下的 SESSDATA，拿到就返回整份 {name: value}；超时抛 SyncError。
+
+    为什么不直接调 session.wait_cookie()：那个方法内部是 self.cookie_dict()（域名参数没往前传），
+    吃的是默认值 xiaohongshu.com，对 B站永远等不到 SESSDATA。这里用同一份 CDP 能力自己轮询，
+    域名显式给 bilibili.com。
+    """
+    start = time.monotonic()
+    seen: list[str] = []
+    while True:
+        cookies = session.cookie_dict(LOGIN_COOKIE_DOMAIN)
+        if cookies.get(LOGIN_COOKIE_NAME):
+            return cookies
+        elapsed = time.monotonic() - start
+        seen = sorted(cookies)
+        if on_tick is not None:
+            try:
+                on_tick(elapsed, seen)
+            except Exception:  # noqa: BLE001 - 进度回调不该影响主流程
+                pass
+        if elapsed >= timeout:
+            names = "、".join(seen) or "（一个都没有）"
+            raise SyncError(
+                f"等待扫码超时：{timeout:.0f} 秒内没等到 {LOGIN_COOKIE_NAME}"
+                f"（{LOGIN_COOKIE_DOMAIN} 域下已有：{names}）。"
+                "请在浏览器窗口里用 B站 App 扫码并确认，或重新运行 login",
+                EXIT_QR_EXPIRED,
+            )
+        time.sleep(max(0.0, min(interval, timeout - elapsed)))
+
+
+def fill_device_ids(cookies: dict) -> dict:
+    """补 buvid3 / buvid4：浏览器一般已经种好了，缺了才问一次 finger/spi（不打印值）。"""
+    merged = {str(name): value for name, value in (cookies or {}).items() if isinstance(value, str)}
+    if merged.get("buvid3") and merged.get("buvid4"):
+        return merged
+    try:
+        payload = parse_api_payload(
+            FINGER_SPI_URL, open_url(FINGER_SPI_URL, build_headers(NAV_REFERER))
+        )
+    except SyncError as error:
+        print(f"  警告：补 buvid3/buvid4 失败（{error}），凭据可能不完整", flush=True)
+        return merged
+    spi = as_dict(payload.get("data"))
+    for name, key in (("buvid3", "b_3"), ("buvid4", "b_4")):
+        value = spi.get(key)
+        if isinstance(value, str) and value.strip() and not merged.get(name):
+            merged[name] = value.strip()
+    if not merged.get("buvid3") or not merged.get("buvid4"):
+        print("  警告：finger/spi 只给了部分 buvid，凭据可能不完整", flush=True)
+    return merged
+
+
+def verify_login_state(cookie_line: str) -> dict:
+    """用 nav 接口验证一次登录态（两条 login 路径共用），返回 nav 的 data。"""
+    nav_payload = parse_api_payload(
+        NAV_URL, open_url(NAV_URL, build_headers(NAV_REFERER, cookie_line))
+    )
+    nav_data = as_dict(nav_payload.get("data"))
+    if nav_data.get("isLogin") is not True:
+        raise SyncError(
+            "nav 接口返回 isLogin != true，cookie 没有被 B站认下来，请重新 login", EXIT_AUTH
+        )
+    print(
+        f"  验证通过：{nav_data.get('uname')}({nav_data.get('mid')}) "
+        f"level={nav_data.get('level')}",
+        flush=True,
+    )
+    return nav_data
+
+
+def cmd_login_browser(args) -> int:
+    """login 主路径：起本机浏览器打开 B站登录页，人扫码，脚本从 CDP 读 cookie 落盘。"""
+    account = validate_account(args.account)
+    timeout = float(getattr(args, "timeout", 0) or LOGIN_TIMEOUT_DEFAULT)
+    if timeout <= 0:
+        raise SyncError("--timeout 必须是正数（秒）")
+
+    browser_error, browser_session, find_browser = load_browser_api()
+    try:
+        executable = find_browser(getattr(args, "browser", None))
+    except browser_error as error:
+        raise SyncError(
+            f"{error}。装一个 Chrome/Edge 再来，或加 --qr 走纯 HTTP 二维码 PNG 流程"
+        ) from error
+
+    print(f"浏览器：{executable}")
+    if getattr(args, "headless", False):
+        print("注意：无头模式窗口不可见，只适合自测；真扫码请去掉 --headless", flush=True)
+
+    try:
+        with browser_session(
+            executable=executable,
+            headless=bool(getattr(args, "headless", False)),
+            wait_timeout=BROWSER_READY_TIMEOUT,
+        ) as session:
+            print(f"正在打开登录页：{LOGIN_PAGE_URL}", flush=True)
+            session.open(LOGIN_PAGE_URL, timeout=30)
+            where = "登录页已打开，窗口不可见" if getattr(args, "headless", False) else "窗口已弹出"
+            print(f"请用 B站手机客户端扫码登录（{where}），最长等 {timeout:.0f} 秒", flush=True)
+            cookies = wait_login_cookie(session, timeout, on_tick=make_progress_printer(timeout))
+            pairs = browser_cookie_pairs(fill_device_ids(cookies))
+    except browser_error as error:
+        # 起浏览器 / 导航 / 读 cookie 的失败都收敛成一句可读中文，不让 traceback 冒出去。
+        raise SyncError(f"浏览器扫码失败：{error}") from error
+
+    cookie_line = cookie_to_header(pairs)
+    path = save_credential(account, cookie_line)
+    print(f"  已写入凭据：{path}")
+    print(f"  字段：{describe_cookie_line(cookie_line)}", flush=True)
+    verify_login_state(cookie_line)
+    return EXIT_OK
 
 
 def _render_qr_image(url: str, target: Path) -> None:
@@ -415,8 +605,17 @@ def _paint_cookie(
     )
 
 
-def cmd_login(args) -> int:
+def cmd_login_http(args) -> int:
+    """login 退路：纯 HTTP 申请二维码并渲染成 PNG（需要 qrcode + pillow）。
+
+    这条路**不再**用浏览器打开 qr_url：那是「手机端扫码成功后要打开的 H5 页」，
+    桌面浏览器打开它等于一个无效页面，永远等不到扫码确认，只能一路等到超时。
+    """
     account = validate_account(args.account)
+    timeout = float(getattr(args, "timeout", 0) or POLL_TIMEOUT)
+    if timeout <= 0:
+        raise SyncError("--timeout 必须是正数（秒）")
+
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
@@ -436,28 +635,26 @@ def cmd_login(args) -> int:
     print("请用 B站手机客户端扫码登录：")
     try:
         _render_qr_image(qr_url, image_path)
-        printed_image = True
-    except ModuleNotFoundError:
-        # 没装 qrcode/pillow：不为登一次录装第三方包。同一个地址用浏览器打开就是同一张二维码，
-        # 本脚本照样轮询 qrcode_key 等手机端确认（面板点「扫码登录」走的就是这条退路）。
-        printed_image = False
-        webbrowser.open(qr_url)
-    if printed_image:
-        print(f"  二维码图片：{image_path}")
-    else:
-        print("  没装 qrcode/pillow，已用浏览器打开扫码页（想生成 PNG：python -m pip install qrcode pillow）")
+    except ModuleNotFoundError as error:
+        # 不弹浏览器：qr_url 是扫码成功之后才该打开的 H5 页，桌面浏览器打开它永远等不到确认。
+        raise SyncError(
+            "没装 qrcode/pillow，无法把二维码渲染成 PNG。请先执行"
+            " python -m pip install qrcode pillow 再重试 login --qr；"
+            "或者去掉 --qr，走默认的浏览器扫码（不需要任何第三方包）"
+        ) from error
+    print(f"  二维码图片：{image_path}")
     print(f"  二维码内容：{qr_url}")
-    print(f"  最长等待 {int(POLL_TIMEOUT)} 秒，每 {int(POLL_INTERVAL)} 秒查询一次状态", flush=True)
+    print(f"  最长等待 {timeout:.0f} 秒，每 {int(POLL_INTERVAL)} 秒查询一次状态", flush=True)
 
     # 3) 轮询扫码状态，用 cookie jar 接住 Set-Cookie
-    deadline = time.monotonic() + POLL_TIMEOUT
+    deadline = time.monotonic() + timeout
     scanned_notice_shown = False
     polled = 0
     login_url = ""
     while True:
         if time.monotonic() > deadline:
             raise SyncError(
-                f"等待扫码超时（{int(POLL_TIMEOUT)} 秒），请重新运行 login", EXIT_QR_EXPIRED
+                f"等待扫码超时（{timeout:.0f} 秒），请重新运行 login", EXIT_QR_EXPIRED
             )
         time.sleep(POLL_INTERVAL)
         polled += 1
@@ -525,20 +722,15 @@ def cmd_login(args) -> int:
     print(f"  字段：{describe_cookie_line(cookie_line)}", flush=True)
 
     # 6) 用 nav 验证一次
-    nav_payload = parse_api_payload(
-        NAV_URL, open_url(NAV_URL, build_headers(NAV_REFERER, cookie_line))
-    )
-    nav_data = nav_payload.get("data") or {}
-    if nav_data.get("isLogin") is not True:
-        raise SyncError(
-            "nav 接口返回 isLogin != true，cookie 没有被 B站认下来，请重新 login", EXIT_AUTH
-        )
-    print(
-        f"  验证通过：{nav_data.get('uname')}({nav_data.get('mid')}) "
-        f"level={nav_data.get('level')}",
-        flush=True,
-    )
+    verify_login_state(cookie_line)
     return EXIT_OK
+
+
+def cmd_login(args) -> int:
+    """login 总入口：默认借浏览器扫码；--qr 退回纯 HTTP 二维码 PNG 流程。"""
+    if getattr(args, "qr", False):
+        return cmd_login_http(args)
+    return cmd_login_browser(args)
 
 
 # ---------------------------------------------------------------------------
@@ -978,15 +1170,18 @@ def build_parser() -> argparse.ArgumentParser:
         prog="bili_sync.py",
         description=(
             "B站创作中心采集器（独立脚本，插件本体不联网）。\n"
-            "login 扫码登录并把 cookie 存到 <工作区根>/config/bilibili_<account>.txt；\n"
+            "login 借本机 Chrome/Edge 打开 B站登录页扫码（或 --qr 走纯 HTTP 二维码 PNG），\n"
+            "  把 cookie 存到 <工作区根>/config/bilibili_<account>.txt；\n"
             "fetch 采集稿件数据，产出 JSON 给插件导入。"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "退出码：0 成功；1 一般错误；2 cookie 过期（需重新 login）；"
-            "3 被风控（降频重试）；4 二维码失效（需重新 login）。\n"
+            "3 被风控（降频重试）；4 等待扫码超时或二维码失效（需重新 login）。\n"
             "例子：\n"
-            "  python scripts/bili_sync.py login\n"
+            "  python scripts/bili_sync.py login                          # 借本机 Chrome/Edge 扫码\n"
+            "  python scripts/bili_sync.py login --browser edge --timeout 600\n"
+            "  python scripts/bili_sync.py login --qr                      # 退路：纯 HTTP 二维码 PNG\n"
             "  python scripts/bili_sync.py fetch --max 50\n"
         ),
     )
@@ -994,10 +1189,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     login_parser = subparsers.add_parser(
         "login",
-        help="扫码登录，把 cookie 写进 config/bilibili_<account>.txt",
+        help="扫码登录，把 cookie 写进 config/bilibili_<account>.txt（默认借本机浏览器扫码）",
         description=(
-            "申请登录二维码并渲染成 PNG，然后每 2 秒轮询扫码状态（最长 5 分钟）。\n"
+            "默认路径：拉起本机 Chrome/Edge（临时 profile，不碰你日常的浏览器）打开 B站官方登录页，\n"
+            "页面自己渲染二维码，你用 B站手机客户端扫码；脚本通过 CDP 每 2 秒轮询一次 cookie，\n"
+            "最长等 --timeout 秒（默认 300）。不需要任何第三方包。\n"
             "成功后补 buvid3/buvid4、序列化 cookie 落盘，并用 nav 接口验证一次登录状态。\n"
+            "退路：--qr 走纯 HTTP 申请二维码并渲染成 PNG，这条路需要 qrcode + pillow。\n"
             "cookie 值不会打印到终端，只打印字段名与长度。"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1007,6 +1205,29 @@ def build_parser() -> argparse.ArgumentParser:
         default="main",
         metavar="NAME",
         help="账号简称，决定凭据文件名 bilibili_<NAME>.txt（默认 main）",
+    )
+    login_parser.add_argument(
+        "--browser",
+        choices=("chrome", "edge"),
+        default=None,
+        help="指定用哪个浏览器扫码，默认先找 Chrome 再找 Edge",
+    )
+    login_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="无头模式（窗口不显示，只适合自测；真扫码别用）",
+    )
+    login_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=LOGIN_TIMEOUT_DEFAULT,
+        metavar="SEC",
+        help="等扫码的最长秒数（默认 300）",
+    )
+    login_parser.add_argument(
+        "--qr",
+        action="store_true",
+        help="退路：不借浏览器，走纯 HTTP 二维码 PNG（需要 qrcode + pillow）",
     )
     login_parser.set_defaults(handler=cmd_login)
 
