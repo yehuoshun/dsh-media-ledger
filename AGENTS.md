@@ -57,9 +57,9 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 
 ---
 
-## 3. 怎么跑起来（本机没有 Node）
+## 3. 怎么跑起来（本机有 Node，没有时借宿主 Electron）
 
-借用宿主 Electron 当 Node，**不要**去装 Node 或改 PATH：
+本机装有 Node、`node` 在 PATH 里，直接 `node test/smoke.mjs` 即可；换到没装 Node 的机器时才借宿主 Electron 当 Node，**不要**为了跑测试去装 Node 或改 PATH：
 
 ```powershell
 $env:ELECTRON_RUN_AS_NODE = "1"
