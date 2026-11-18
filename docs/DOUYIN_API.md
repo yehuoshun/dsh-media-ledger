@@ -196,63 +196,65 @@ SDK 类默认 `aid=6383`，创作者中心全局 `aid=2906`（`setConfig({aid:29
 
 ---
 
-## 5. 字段 → 台账映射（提案，待真实 cookie 复核）
+## 5. 字段 → 台账映射（已落地：`lib/douyin.js`）
 
-台账现有口径（`lib/bilibili.js` 已定型，抖音照抄形状即可）：
+下表就是 `lib/douyin.js` 的实际行为，改代码要同步改这张表：
 
-```js
-post   = { platform, platform_id, title, url, published_at, kind, tags, extras }
-metric = { post_id, captured_at, play, like, comment, share, collect }
-```
-
-| 台账字段 | 抖音来源（预期键名，**待实测**） | 备注 |
+| 台账字段 | 抖音来源（**按顺序回退，取到就用**） | 备注 |
 |---|---|---|
 | `platform` | 常量 `douyin` | |
-| `platform_id` | `items[].aweme_id` | 纯数字 ID，比 B站 bvid 更简单 |
-| `title` | `items[].desc` | 抖音没有独立标题，取文案首行；空文案落「(无文案)」 |
-| `url` | `https://www.douyin.com/video/<aweme_id>` | 由 ID 拼，不用接口回 |
-| `published_at` | `items[].create_time`（秒） | 复用 `tsToLocal` 的秒→本地时间 |
-| `kind` | 常量 `视频` | 图文作品以后再说 |
-| `tags` | `items[].text_extra[].hashtag_name` | 待实测 |
-| `play` | `metrics.play_count` | 可能只有「播放中」/滞后口径，见 §6 |
-| `like` | `metrics.digg_count` | |
-| `comment` | `metrics.comment_count` | |
-| `share` | `metrics.share_count` | |
-| `collect` | `metrics.collect_count` | 抖音有「收藏」，字段名待实测 |
+| `platform_id` | `aweme_id` | 19 位纯数字，比 B站 bvid 简单 |
+| `title` | `title` → `desc` 首行 | 抖音没有独立标题；文案常带换行与 `#话题`，整段塞进台账会把列表撑烂 |
+| `url` | `share_url` → `https://www.douyin.com/video/<aweme_id>`（图集 `note/`） | 由 ID 拼，不再回接口 |
+| `published_at` | `published_at` 字符串 → `create_time` | 秒/毫秒都认（`> 1e11` 当毫秒） |
+| `kind` | `media_type==2` 或有 `images` → `图文`，否则 `视频` | |
+| `play` | `metrics.view_count` → `metrics.play_count` → `statistics.play_count` → `view_count` | 详情优先；退回粗值会记 warning |
+| `like` | `metrics.like_count` → `metrics.digg_count` → `statistics.digg_count` → … | |
+| `comment` | `metrics.comment_count` → `statistics.comment_count` → `comment_count` | |
+| `share` | `metrics.share_count` → `metrics.share_forward_count` → `statistics.share_count` → … | |
+| `collect` | `metrics.favorite_count` → `metrics.collect_count` → `statistics.collect_count` → … | |
+| `extras.douyin` | `completion_rate`（`0.382`→`38.2` 并告警）、`avg_view_second`、`duration_ms`、`media_type`、`review_status`、`visibility_status`、`listed{play,like}` | 旁证入库，不参与口径计算 |
 
-`item/mget` 的 `play_info` / `review` 原样塞进 `extras`（和 B站 `extras.settled` / `extras.diagnose` 一个思路：旁证入库，不参与口径计算）。
+**为什么是候选链而不是单一键名**：抖音没有公开稳定的字段契约（接口清单由 prefetch 配置下发、字段随端漂移），
+未登录实测 `item/mget` 只回空 `items`，真实键名要等第一次带 cookie 抓回来才能定稿。届时把命中的键提到候选链最前面即可，
+不用改结构。**缺值一律 `undefined`/`null`，不写 0**——0 会被台账当成「真没人看」，这就是 B站那条链路踩过的坑。
 
 ---
 
-## 6. 采集脚本设计（`scripts/douyin_sync.py`，未开工）
+## 6. 采集脚本（`scripts/douyin_sync.py`，已落地）
 
-| 项 | 约定（对齐 `bili_sync.py`） |
+| 项 | 实际约定 |
 |---|---|
-| 依赖 | 只用标准库；二维码渲染这类可选依赖懒加载 |
-| 凭据 | `<工作区根>/config/douyin_cookie_<account>.txt`（只存 cookie 串，权限最小） |
-| 输出 | `<工作区根>/tmp/douyin-import.json` |
-| `login` | 方案 A：`--cookie "..."` 或 `--cookie-file`，落盘前用 `work_list` 打一次验证 `status_code != 8` |
-| `fetch` | `work_list` 翻页（`count` 页大小、`max_cursor` 游标、`has_more` 停），逐条可选 `item/mget` 补 `metrics/play_info` |
-| 节流 | ≥0.35s / 请求，与 B站一致；`status_code` 非 0 不重试，传输错误重试 2 次 |
-| 退出码 | 0 成功 / 1 一般错误 / 2 凭据失效（`status_code: 8`）/ 3 风控 / 4 二维码失效（预留，方案 B 用） |
-| 请求量 | 500 条作品 ≈ 42 页（count=12）或 10 页（count=50，上限待实测） |
+| 依赖 | 只用标准库（`urllib` + `socket`/`struct` 手写 RFC6455 的 WebSocket 客户端，不装 websocket-client） |
+| 子命令 | `login`（`--account`/`--port 9222`/`--browser`/`--timeout 180`/`--force`）、`fetch`（`--account`/`--max 50`（上限 200）/`--sleep 0.35`/`--out`）、`whoami`、`selftest` |
+| 凭据 | `<工作区根>/config/douyin_<account>.txt`（JSON，`name→value`），与 B站脚本同一目录约定 |
+| 浏览器 profile | `<工作区根>/tmp/douyin-profile-<account>` |
+| 输出 | `<工作区根>/tmp/douyin-import.json`，顶层四键 `generated_at`/`account`/`posts`/`warnings` |
+| 退出码 | `0` 成功 / `1` 一般错误 / `2` 未登录（`status_code==8`，**不重试**）/ `3` 风控（352/412/2154）/ `4` 扫码超时 |
+| 自证 | `python scripts/douyin_sync.py selftest` → 本地假服务跑完整链路，**25/25** |
 
-### 6.1 已知坑（实施时验证）
+`login` 的实际流程（方案 B，用户 2026-11-18 选定）：探测 Chrome → Edge → 报错提示 `--browser`；
+用独立 profile 起 `--remote-debugging-port`（关 `AutomationControlled`）打开作品管理页；
+轮询 `/json/list` 拿页面 target；`Runtime.evaluate` 在**页面里**发一次 `work_list`，`status_code != 8` 即视为已登录；
+`Storage.getCookies` 取 cookie 落盘（终端只打印字段名与长度）；只 kill 自己启动的 pid，不碰用户自己的浏览器窗口。
+
+### 6.1 已知坑（脚本里已处理，别再踩一遍）
 
 1. **`status_code: 8` 不抛 HTTP 错误**——必须解析 body，别只看 HTTP 200。
-2. **双层封套**：`item/mget` 有外层 `status_code` 和内层 `BaseResp.StatusCode`。
-3. **`aid` 双轨**：prefetch 用 `1128 + device_platform=android`，创作者中心 web 全局是 `2906 + web`；两条路未登录都通，登录后哪条返回完整数据要实测（可能只有一条给全量）。
-4. **数据延迟**：抖音播放数有 T+ 延迟与「播放中」状态，快照 `captured_at` 必须记「抓取时间」而不是接口的 `now`。
-5. **`count` 上限未知**：prefetch 给 12，实际可能支持 50/100，不确认就按 12 走，别猜大值打限频。
-6. **反自动化检测**：`562.*.js` 检测 `__playwright__`/`__webdriver`/`__selenium`/`__cdc_`/`window.chrome.csi` 等——方案 B 起浏览器要加 `--disable-blink-features=AutomationControlled`。
+2. **双层封套**：`item/mget` 的顶层 `status_code` 与内层 `BaseResp.StatusCode` 都要认。
+3. **`aid` 双轨**：`1128 + android`（prefetch 原值）与 `2906 + web` 都能过网关，默认前者，异常时可切。
+4. **数据延迟**：抖音播放数有 T+ 延迟，快照 `captured_at` 必须记「抓取时间」而不是接口的 `now`。
+5. **`count` 上限未知**：默认 20，`--max` 封顶 200，别猜大值打限频。
+6. **反自动化检测**：`562.*.js` 检测 `__playwright__`/`__webdriver`/`__selenium`/`__cdc_`/`window.chrome.csi`——起浏览器要关 `AutomationControlled`。
 
 ---
 
-## 7. 待办 / 待实测清单
+## 7. 待实测清单（有真实 cookie 后第一件事）
 
-- [ ] 真实 cookie 下 `work_list` 的 `items[]` 真实键名与 `count` 上限
-- [ ] `item/mget` 的 `metrics` / `play_info` / `review` 三组真实结构
-- [ ] 登录态下 `aid=1128` vs `2906` 哪条更像正路
+- [ ] 首次 `fetch` 后回看 `warnings`：哪些指标命中的是「候选回退（真实键名未实测）」，把命中键提到 `lib/douyin.js` 与 `douyin_sync.py` 候选链的最前面
+- [ ] `login` 在真机上能否一路走到 `Storage.getCookies`（Chrome 与 Edge 各试一次）
+- [ ] `aid=1128` 与 `2906` 哪条返回全量列表
 - [ ] `status` 枚举值（全部/已发布/审核中/草稿）
-- [ ] 图文作品（`images` 类）在 `work_list` 里长什么样
+- [ ] 图文作品（`images`）在 `work_list` 里长什么样、`media_type` 到底是不是 2
 - [ ] cookie 有效期与失效表现（是否仍是 `status_code: 8`）
+
