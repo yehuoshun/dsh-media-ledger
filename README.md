@@ -185,6 +185,10 @@ media { action: "import_douyin", path: "…", dry_run: true }
 `user/info`），带 cookie 就够了。退码同样分档：`0` 成功 / `1` 一般错误 / `2` 未登录（`status_code==8`，不重试）/
 `3` 风控 / `4` 扫码超时。
 
+登录只走**手机 App 扫码**，脚本永远不碰密码、不碰短信验证码：它拉起的是一个独立 profile 的浏览器（你自己的窗口、扩展、
+书签都不受影响），你扫完码它取 `douyin.com` 域的 cookie 落盘就关窗。**登录成功后默认把那个独立 profile 删掉**——目录里
+是一份能直接续上账号的活登录态，凭据既然已单独存进 `config/`，就不该再在 `tmp/` 摊一份；想复用它重试再加 `--keep-profile`。
+
 口径上抖音的坑不在「一套数据三个值」，而在**字段不稳定**：创作者中心的接口清单由 prefetch 配置下发、字段名随端漂移，
 所以 `lib/douyin.js` 用的是候选链（`metrics.view_count` → `metrics.play_count` → `statistics.play_count` …），
 取到粗值会记 warning，一个值都没有就整条不落盘（**绝不写 0**）。`completion_rate` 是 0~1 小数，入库前乘 100 并记一条警告。

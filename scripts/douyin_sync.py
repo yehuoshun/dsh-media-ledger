@@ -1718,6 +1718,19 @@ def close_browser(proc, port: int) -> None:
             proc.wait(timeout=5)
 
 
+def cleanup_profile(profile_dir: Path) -> bool:
+    """删掉登录用的独立 profile。
+
+    那个目录里是一份**活的**登录态：cookie、LocalStorage、缓存全在，能直接续上账号。
+    既然凭据已经单独落 `config/douyin_<account>.txt`，留它只是把一份登录态摊在 `tmp/` 里，
+    所以默认删掉；只有想复用这份登录态重试时才加 `--keep-profile`。
+    """
+    if not profile_dir.exists():
+        return False
+    shutil.rmtree(profile_dir, ignore_errors=True)
+    return not profile_dir.exists()
+
+
 def cmd_login(args) -> int:
     account = validate_account(args.account)
     base_url = resolve_base_url(args.base_url)
@@ -1794,6 +1807,12 @@ def cmd_login(args) -> int:
             EXIT_AUTH,
         )
     print("  复核通过：命令行带这份 cookie 能读到作品列表", flush=True)
+    if args.keep_profile:
+        print(f"  独立 profile 保留（--keep-profile）：{profile_dir}", flush=True)
+    elif cleanup_profile(profile_dir):
+        print(f"  已删除独立 profile（里面是活的登录态，cookie 已单独落盘）：{profile_dir}", flush=True)
+    else:
+        print(f"  独立 profile 未能删除，建议手动清掉：{profile_dir}", flush=True)
     return EXIT_OK
 
 
@@ -2200,6 +2219,16 @@ def cmd_selftest(args) -> int:
             "未登录" in stderr_text or "cookie" in stderr_text,
             "未登录时 stderr 提示重新 login",
         )
+
+        # 独立 profile 清理：登录成功后那份活登录态不该留在 tmp/
+        probe_profile = work_dir / "profile-probe"
+        (probe_profile / "Default").mkdir(parents=True, exist_ok=True)
+        (probe_profile / "Default" / "Cookies").write_text("mock", encoding="utf-8")
+        checker.check(cleanup_profile(probe_profile) is True, "登录成功后能删除独立 profile")
+        checker.check(not probe_profile.exists(), "删除后 profile 目录确实不存在")
+        checker.check(cleanup_profile(probe_profile) is False, "profile 本来就不存在时删除返回 False 而不抛错")
+        login_help = build_parser().parse_args(["login"]).keep_profile
+        checker.check(login_help is False, "--keep-profile 默认关闭（默认删 profile）")
     finally:
         with contextlib.suppress(Exception):
             server.shutdown()
@@ -2290,6 +2319,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="已有凭据且仍有效时也重新扫码",
+    )
+    login_parser.add_argument(
+        "--keep-profile",
+        action="store_true",
+        help="登录成功后保留浏览器独立 profile（默认删掉：那里面是一份活的登录态）",
     )
     login_parser.add_argument(
         "--base-url",
