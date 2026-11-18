@@ -21,7 +21,7 @@
 
 命令：`login` 扫码登录、`fetch` 导出并生成 JSON（用 std::lib 解析 xlsx：zipfile + ElementTree）。
 
-凭据：`config/xhs_<账号>.txt` 里是 **JSON 对象** `{"web_session": "...", "a1": "...", ...}`
+凭据：`config/xhs_<账号>.json` 里是 **JSON 对象** `{"web_session": "...", "a1": "...", ...}`
 （缩进 2、UTF-8 无 BOM，与抖音脚本统一）；老的单行 `k=v; k=v` 文件仍能读，不用重扫。
 
 退出码：0 成功 / 1 一般错误 / 2 cookie 过期（要重新 login）/ 3 触发风控 / 4 扫码超时或取消。
@@ -110,7 +110,7 @@ def workspace_paths():
 
 
 def credential_path(account):
-    return workspace_paths()["config_dir"] / f"xhs_{account}.txt"
+    return workspace_paths()["config_dir"] / f"xhs_{account}.json"
 
 
 def default_output_path():
@@ -512,7 +512,7 @@ def build_parser():
     login_parser.add_argument("--browser", choices=("chrome", "edge"), default=None, help="指定浏览器（默认自动找）")
     login_parser.add_argument("--headless", action="store_true", help="无头跑（扫码时看不见窗口，只用于自测）")
     login_parser.add_argument("--timeout", type=float, default=300.0, metavar="SEC", help="等待扫码的秒数（默认 300）")
-    login_parser.add_argument("--out", default=None, metavar="PATH", help="凭据落盘路径，默认 config/xhs_<account>.txt")
+    login_parser.add_argument("--out", default=None, metavar="PATH", help="凭据落盘路径，默认 config/xhs_<account>.json")
     login_parser.set_defaults(handler=cmd_login)
 
     fetch_parser = subs.add_parser("fetch", help="导出笔记明细并生成 JSON")

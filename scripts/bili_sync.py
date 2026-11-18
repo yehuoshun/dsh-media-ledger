@@ -8,7 +8,7 @@
     插件只吃它产出的 JSON 文件。两边靠文件解耦：脚本挂了不影响插件，插件升级也不碰脚本。
 
 两个子命令：
-    login   扫码登录，把 cookie 存到 <工作区根>/config/bilibili_<account>.txt（内容是一个 JSON 对象）
+    login   扫码登录，把 cookie 存到 <工作区根>/config/bilibili_<account>.json（内容是一个 JSON 对象）
     fetch   拉取稿件列表 + 每个稿件的三份数据 + 实时互动数，产出 <工作区根>/tmp/bili-import.json
 
 约定：
@@ -177,7 +177,7 @@ def workspace_paths() -> dict[str, Path]:
 
 
 def credential_path(account: str) -> Path:
-    return workspace_paths()["config_dir"] / f"bilibili_{account}.txt"
+    return workspace_paths()["config_dir"] / f"bilibili_{account}.json"
 
 
 def identity_path(account: str) -> Path:
@@ -1259,7 +1259,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "B站创作中心采集器（独立脚本，插件本体不联网）。\n"
             "login 借本机 Chrome/Edge 打开 B站登录页扫码（或 --qr 走纯 HTTP 二维码 PNG），\n"
-            "  把 cookie 存到 <工作区根>/config/bilibili_<account>.txt；\n"
+            "  把 cookie 存到 <工作区根>/config/bilibili_<account>.json；\n"
             "fetch 采集稿件数据，产出 JSON 给插件导入。"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1277,7 +1277,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     login_parser = subparsers.add_parser(
         "login",
-        help="扫码登录，把 cookie 写进 config/bilibili_<account>.txt（默认借本机浏览器扫码）",
+        help="扫码登录，把 cookie 写进 config/bilibili_<account>.json（默认借本机浏览器扫码）",
         description=(
             "默认路径：拉起本机 Chrome/Edge（临时 profile，不碰你日常的浏览器）打开 B站官方登录页，\n"
             "页面自己渲染二维码，你用 B站手机客户端扫码；脚本通过 CDP 每 2 秒轮询一次 cookie，\n"
@@ -1292,7 +1292,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--account",
         default="main",
         metavar="NAME",
-        help="账号简称，决定凭据文件名 bilibili_<NAME>.txt（默认 main）",
+        help="账号简称，决定凭据文件名 bilibili_<NAME>.json（默认 main）",
     )
     login_parser.add_argument(
         "--browser",
@@ -1332,7 +1332,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--account",
         default="main",
         metavar="NAME",
-        help="账号简称，读 config/bilibili_<NAME>.txt（默认 main）",
+        help="账号简称，读 config/bilibili_<NAME>.json（默认 main）",
     )
     fetch_parser.add_argument(
         "--max",
