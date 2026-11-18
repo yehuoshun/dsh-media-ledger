@@ -16,7 +16,7 @@ import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
 import { buildPanel, parseSlice, POST_LIMIT } from '../lib/panel.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
-import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport } from '../lib/xiaohongshu.js';
+import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
@@ -221,9 +221,11 @@ const xhsFirst = mockXhs.rows[0];
 check('小红书观看量进 play、涨粉进 fans', xhsFirst.metric.play === 1200 && xhsFirst.metric.fans === 3, JSON.stringify(xhsFirst.metric));
 check('小红书曝光量只进 extras', xhsFirst.metric.extras.impressions === 8000 && xhsFirst.metric.extras.cover_click_rate === 31.2, JSON.stringify(xhsFirst.metric.extras));
 check('小红书快照标出来源', xhsFirst.metric.source === '小红书创作中心' && xhsFirst.metric.captured_at === '2026-11-18 01:20');
-check('小红书作品记录平台/类型/时间/链接兜底', xhsFirst.post.platform === 'xhs' && xhsFirst.post.kind === '图文'
+check('小红书作品记录平台/类型/时间；合成 id 不拼假链接', xhsFirst.post.platform === 'xhs' && xhsFirst.post.kind === '图文'
   && xhsFirst.post.platform_id === 'mocknote0001' && xhsFirst.post.date === '2026-11-10'
-  && xhsFirst.post.url === 'https://www.xiaohongshu.com/explore/mocknote0001', JSON.stringify(xhsFirst.post));
+  && xhsFirst.post.url === '', JSON.stringify(xhsFirst.post));
+check('真笔记 id（24 位十六进制）才拼 explore 链接', toXhsPost({ note_id: '6afc64110000000018028304' }, 'mock').url
+  === 'https://www.xiaohongshu.com/explore/6afc64110000000018028304');
 const xhsVideo = mockXhs.rows[1];
 check('小红书视频与图文分开记 kind', xhsVideo.post.kind === '视频' && kindOf({ kind: 'video' }) === '视频' && kindOf({}) === '图文', xhsVideo.post.kind);
 check('小红书给了 0 就照实记 0', xhsVideo.metric.play === 0 && xhsVideo.metric.like === 0, JSON.stringify(xhsVideo.metric));
