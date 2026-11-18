@@ -20,7 +20,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | 多账号矩阵、团队协作、权限 | 用户自述「我最多两账号，都是个人号」 |
 | 独立 Web 应用 / 仓库内 CLI | 用户已明确否掉这两种形态，选了 DSH 插件 |
 
-**面板已经存在**（2026-11-18，用户点名要左侧栏入口 + 开关）：左侧栏图标「自媒体台账」→ 主区一页台账列表 + 复盘摘要，页内一个「在左侧栏显示」开关。**不要自己扩成独立页面体系**：不加路由、不加第二个面板、不做图表库；要加内容先问用户——这是本项目被纠正过两次的地方（用户原话：「回滚，你都没问我」「我问你的是dsh插件，你在做什么？」）。
+**面板已经存在**（2026-11-18，用户点名要左侧栏入口 + 开关；同日又按用户要求改成「左导航 + 右内容」）：左侧栏图标「自媒体台账」→ 主区左栏切视图（台账 / 复盘）与筛选（平台 → 账号两级树），右栏只看当前切片；页内一个「在左侧栏显示」开关。视图与筛选都是浏览器里的 `useState`，**不改地址、不新增路由**；每个切片的复盘由 Host 用同一套 `buildReport` 算好，前端不自己算指标。**不要自己扩成独立页面体系**：不加路由、不加第二个面板、不做图表库；要加内容先问用户——这是本项目被纠正过两次的地方（用户原话：「回滚，你都没问我」「我问你的是dsh插件，你在做什么？」）。
 
 ---
 
@@ -35,7 +35,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | `lib/pack.js` | 发布包：标题字数、标签归一截断、封面比例校验 |
 | `lib/bilibili.js` | B站采集产出的 JSON → 台账记录（纯函数映射：`normalizeImport` / `toPostRecord` / `toMetricRecord` / `matchPost`；不联网、不读盘，输入输出都是普通对象） |
 | `lib/tool.js` | 工具定义：参数 schema、action 分发、错误收敛成 `{ ok:false, error }` |
-| `lib/panel.js` | 面板数据整形：`toPanelPost` / `buildPanel`（只搬运 `buildReport` 的口径，**不另算一套指标**） |
+| `lib/panel.js` | 面板数据整形：`toPanelPost` / `buildFacets`（平台 → 账号两级树）/ `buildPanel`（每个切片一份 `buildReport`，**不另算一套指标**）/ `parseSlice` |
 | `lib/bridge.js` | Host 侧面板桥：`GET /api/dsh-media-ledger/state`（面板数据）、`POST .../sidebar`（写开关）；`sidebarEnabled` / `readPanel` / `saveSidebar` |
 | `lib/client.js` | 浏览器侧 bundle：`window.__ModuleLoader__.load({ id: 'dsh-media-ledger', factory })`，注册 `sidebar.panellist`（图标「自媒体台账」）+ `main`（面板页）+ 命令 `media-ledger-sidebar` |
 | `lib/util.js` | `parseCount`（`2.4w` / `1.2万`）、`toLossless` |
@@ -60,7 +60,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 94/94**（含面板整形、桥路由、客户端 bundle 契约、B站 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
+- 期望：`smoke.mjs` → **全过 106/106**（含面板整形与筛选树、桥路由、客户端 bundle 契约与「真跑一遍 bundle」、B站 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 

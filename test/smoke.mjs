@@ -9,12 +9,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import { buildRows, buildReport, parseTs, latestSnapshots, median, interaction } from '../lib/metrics.js';
 import { buildPack } from '../lib/pack.js';
 import { parseCount, toLossless } from '../lib/util.js';
 import { normalizePlatform } from '../lib/config.js';
 import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir, POSTS_FILE, METRICS_FILE } from '../lib/store.js';
-import { buildPanel } from '../lib/panel.js';
+import { buildPanel, parseSlice, POST_LIMIT } from '../lib/panel.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
@@ -221,6 +222,13 @@ const panelPayload = readPanel({ dataDir: panelDir });
 check('桥读出的台账目录是配置那个', panelPayload.dataDir === panelDir && panelPayload.ok === true, panelPayload.dataDir);
 check('桥的 payload 带复盘和列表', panelPayload.posts.length === 2 && panelPayload.report.total === 2 && panelPayload.sidebar === true);
 check('桥没有坏行时 errors 为空', Array.isArray(panelPayload.errors) && panelPayload.errors.length === 0);
+check(
+  '桥的 payload 带筛选树与切片复盘',
+  panelPayload.facets && panelPayload.facets.total === 2
+    && panelPayload.reports && panelPayload.reports['platform:douyin'].total === 1
+    && panelPayload.postsTotal === 2 && panelPayload.truncated === false,
+  JSON.stringify({ facets: panelPayload.facets, keys: panelPayload.reports && Object.keys(panelPayload.reports) }),
+);
 const routes = makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir });
 check('桥只开两条路由', routes.length === 2 && routes.every((route) => route.kind === 'exact' && route.path.startsWith(BRIDGE_PREFIX)), routes.map((r) => r.path).join(','));
 check('桥路由名对得上客户端', routes.map((route) => route.path).join(',') === `${BRIDGE_PREFIX}/state,${BRIDGE_PREFIX}/sidebar`);
@@ -271,6 +279,61 @@ check('不 require 任何 dsh-client-* 包', !/require\(\s*['"]@deepseek-ai\/dsh
 check('侧栏 id 与主区域 key 是同一个常量', /const PANEL_ID = 'dsh-media-ledger'/.test(clientText) && clientText.includes('id: PANEL_ID') && clientText.includes('key: PANEL_ID'));
 check('客户端只连本机桥，没有外网地址', !/https?:\/\//.test(clientText) && clientText.includes("const BRIDGE = 'api/dsh-media-ledger'"));
 check('客户端不碰文件系统', !/require\('node:/.test(clientText) && !/from 'node:/.test(clientText));
+
+// 光看源码文本不够：语法错或 apply 里写错，页面上是白屏，文本断言一条都不会响。
+// 这里用 vm 把 bundle 真跑一遍（stub 掉 window / document / React），确认它能 load 并注册出两个入口。
+let bundleOptions = null;
+const bundleSandbox = {
+  window: { __ModuleLoader__: { load: (options) => { bundleOptions = options; } } },
+  document: { baseURI: 'http://127.0.0.1/' },
+  URL,
+  fetch: () => Promise.reject(new Error('注册阶段不该联网')),
+  console,
+};
+bundleSandbox.globalThis = bundleSandbox;
+vm.createContext(bundleSandbox);
+vm.runInContext(clientText, bundleSandbox, { filename: 'lib/client.js' });
+const bundleReact = {
+  createElement: (type, props, ...children) => ({ type, props, children }),
+  Fragment: 'Fragment',
+  useState: (initial) => [initial, () => {}],
+  useEffect: () => {},
+  useCallback: (fn) => fn,
+};
+const bundleSlots = [];
+let bundleExport = null;
+try {
+  bundleExport = bundleOptions
+    ? bundleOptions.factory((name) => {
+        if (name === 'react') return bundleReact;
+        throw new Error(`客户端 require 了不该有的模块：${name}`);
+      })
+    : null;
+  if (bundleExport) {
+    bundleExport.apply({
+      slots: {
+        inject: (ownerKey, body) => body(),
+        register: (options, component) => {
+          bundleSlots.push({ name: options.name, id: options.id, key: options.key, component: typeof component });
+          return () => {};
+        },
+      },
+      inject: (services, body) => body({ get: () => ({ register: () => () => {} }), effect: (fn) => fn() }),
+    });
+  }
+} catch (error) {
+  check('客户端 bundle 能在页面环境里跑起来', false, String((error && error.message) || error));
+}
+const bundleSidebar = bundleSlots.find((item) => item.name === 'sidebar.panellist');
+const bundleMain = bundleSlots.find((item) => item.name === 'main');
+check('客户端 bundle 能在页面环境里跑起来', Boolean(bundleOptions) && bundleOptions.id === 'dsh-media-ledger', bundleOptions && bundleOptions.id);
+check(
+  '侧栏图标与主面板都注册上了，id 与 key 一致',
+  Boolean(bundleSidebar) && Boolean(bundleMain)
+    && bundleSidebar.component === 'function' && bundleMain.component === 'function'
+    && bundleSidebar.id === bundleMain.key,
+  JSON.stringify(bundleSlots),
+);
 
 // —— 隐私：不外传、不落仓库 ——
 const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js'];
@@ -355,6 +418,63 @@ for (const locale of ['zh', 'en']) {
   }
 }
 check('详情页文档合法（路径 + 单图 + 图存在）', detailProblems.length === 0, detailProblems.join('；'));
+
+// —— 左导航：平台 → 账号两级树，切片复盘走同一套 buildReport ——
+const treeRows = buildRows(
+  [
+    { id: 'p0001', platform: 'douyin', account: 'mock-a', kind: '图文tag', date: '2026-11-10', published_at: '2026-11-10 20:00' },
+    { id: 'p0002', platform: 'douyin', account: 'mock-b', kind: '视频', date: '2026-11-11', published_at: '2026-11-11 20:00' },
+    { id: 'p0003', platform: 'douyin', account: 'mock-a', kind: '视频', date: '2026-11-12', published_at: '2026-11-12 20:00' },
+    { id: 'p0004', platform: 'xhs', account: '', kind: '图文tag', date: '2026-11-13', published_at: '2026-11-13 20:00' },
+    { id: 'p0005', platform: '', kind: '图文tag', date: '2026-11-14' },
+  ],
+  [],
+);
+const tree = buildPanel(treeRows);
+check(
+  '筛选树按平台分桶带条数',
+  tree.facets.platforms.map((item) => `${item.key}:${item.count}`).join(',') === 'douyin:3,xhs:1',
+  JSON.stringify(tree.facets.platforms),
+);
+check(
+  '平台下展开具名账号并排序',
+  tree.facets.platforms[0].accounts.map((item) => `${item.key}:${item.count}`).join(',') === 'mock-a:2,mock-b:1',
+  JSON.stringify(tree.facets.platforms[0].accounts),
+);
+check('空账号不单列成节点', tree.facets.platforms[1].accounts.length === 0 && tree.facets.platforms[1].count === 1);
+check('没填平台的老记录单独一桶', tree.facets.unassigned === 1 && tree.facets.total === 5, JSON.stringify(tree.facets));
+check(
+  '切片复盘与整体同口径',
+  tree.reports['platform:douyin'].total === 3
+    && tree.reports['platform:douyin'].groupBy === 'account'
+    && tree.reports['account:douyin|mock-a'].total === 2
+    && tree.reports['account:douyin|mock-a'].groupBy === 'kind',
+  Object.keys(tree.reports).join(','),
+);
+check('all 切片默认按平台分组且就是 report', tree.report.groupBy === 'platform' && tree.reports.all === tree.report);
+check(
+  '切片 id 能解析也能回落',
+  parseSlice('account:douyin|mock-a').platform === 'douyin'
+    && parseSlice('account:douyin|mock-a').account === 'mock-a'
+    && parseSlice('platform:').kind === 'platform'
+    && parseSlice('all').kind === 'all'
+    && parseSlice('乱写').kind === 'all',
+);
+const manyRows = Array.from({ length: POST_LIMIT + 5 }, (unused, index) => ({
+  id: `p${String(index + 1).padStart(4, '0')}`,
+  platform: 'douyin',
+  account: 'mock-a',
+  kind: '视频',
+  title: `mock 第 ${index + 1} 条`,
+  date: '2026-11-01',
+}));
+const bigPanel = buildPanel(manyRows);
+check(
+  '面板列表按上限截断并给出总数',
+  bigPanel.posts.length === POST_LIMIT && bigPanel.postsTotal === POST_LIMIT + 5 && bigPanel.truncated === true,
+  `${bigPanel.posts.length}/${bigPanel.postsTotal}`,
+);
+check('截断上限可以调', buildPanel(manyRows, { postLimit: 10 }).posts.length === 10 && buildPanel(manyRows, { postLimit: 10 }).truncated === true);
 
 fs.rmSync(dir, { recursive: true, force: true });
 
