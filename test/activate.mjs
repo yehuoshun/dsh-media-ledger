@@ -56,6 +56,9 @@ if (!tool) {
 console.log(`name=${name} inject=${JSON.stringify(inject)} 工具名=${tool.name} 参数键=${Object.keys(tool.parameters.properties).length} 个`);
 console.log(`桥路由 → ${bridgeRoutes.map((route) => route.path).join(', ')}`);
 const bridgeCount = bridgeRoutes.length;
+const bridgePaths = bridgeRoutes.map((route) => route.path);
+const loginRoutesOk = bridgePaths.join(',') === '/api/dsh-media-ledger/state,/api/dsh-media-ledger/sidebar,/api/dsh-media-ledger/login,/api/dsh-media-ledger/login/state';
+console.log(`桥路由数 → ${bridgeCount}${loginRoutesOk ? ' ✓' : ` ✗ ${bridgePaths.join(',')}`}`);
 
 const add = await tool.execute({ action: 'add_post', platform: '抖音', account: '主号', kind: '图文tag', title: '五盾军团23人穿7号致敬C罗', published_at: '2026-11-14 20:00' });
 console.log('add_post →', JSON.stringify(add.added));
@@ -139,6 +142,40 @@ const shapeOk = Boolean(panelPayload.facets)
   && panelPayload.bindings.platforms.every((item) => typeof item.statusText === 'string' && item.statusText.length > 0 && Array.isArray(item.steps));
 console.log(`面板切片 → ${shapeOk ? 'facets + 两级切片 ✓' : JSON.stringify(panelPayload.facets || panelPayload)}`);
 
+// 扫码登录的两条路由：坏输入只回 200 + ok:false，绝不真起 python
+const makeRes = () => {
+  const out = { statusCode: 0, body: '' };
+  out.setHeader = () => {};
+  out.end = (text) => {
+    out.body = text;
+  };
+  return out;
+};
+const loginRoute = bridgeRoutes.find((route) => route.path === '/api/dsh-media-ledger/login');
+const loginStateRoute = bridgeRoutes.find((route) => route.path === '/api/dsh-media-ledger/login/state');
+const loginGetRes = makeRes();
+if (loginRoute) await loginRoute.handler({ method: 'GET' }, loginGetRes);
+const loginMethodOk = loginGetRes.statusCode === 405;
+const loginBadRes = makeRes();
+if (loginRoute) {
+  await loginRoute.handler({
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler('{"platform":"nope"}');
+      if (event === 'end') handler();
+    },
+  }, loginBadRes);
+}
+const loginBadBody = loginBadRes.body ? JSON.parse(loginBadRes.body) : {};
+const loginBadOk = loginBadRes.statusCode === 200 && loginBadBody.ok === false && loginBadBody.code === 'bad-platform';
+const loginStateProbe = makeRes();
+if (loginStateRoute) loginStateRoute.handler({ method: 'GET' }, loginStateProbe);
+const loginStateBody = loginStateProbe.body ? JSON.parse(loginStateProbe.body) : {};
+const loginIdleOk = loginStateBody.ok === true && Boolean(loginStateBody.login) && loginStateBody.login.phase === 'idle';
+const stateLoginOk = Boolean(panelPayload.login) && panelPayload.login.phase === 'idle';
+console.log(`扫码登录 → 路由两条 ${loginRoutesOk ? '✓' : '✗'} / GET login 405 ${loginMethodOk ? '✓' : '✗'} / 坏平台 ${loginBadOk ? loginBadBody.code : '✗ ' + loginBadRes.body} / state.login ${stateLoginOk && loginIdleOk ? 'idle ✓' : '✗'}`);
+
+
 // import_xhs：走 tool.execute，验 action 分发 + 建档 + 快照落盘（放在面板断言之后，免得改动切片数量）
 const xhsFile = path.join(os.tmpdir(), `ml-xhs-import-${Date.now()}.json`);
 fs.writeFileSync(xhsFile, JSON.stringify({
@@ -169,7 +206,12 @@ const ok = report.groups.length === 1
   && list.total === 1
   && badId.ok === false && badAction.ok === false && badCount.ok === false
   && !serialized.includes('undefined')
-  && bridgeCount === 2
+  && bridgeCount === 4
+  && loginRoutesOk
+  && loginMethodOk
+  && loginBadOk
+  && loginIdleOk
+  && stateLoginOk
   && hintOk
   && shapeOk
   && importOk;

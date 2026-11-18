@@ -21,6 +21,7 @@ import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/b
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
 import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
 import { BRIDGE_PREFIX, listCredentialFiles, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
+import { LOGIN_TIMEOUT_MS, LOGIN_TARGETS, buildLoginPlan, describeLoginState, extractQrPath, filterLoginLog, sanitizeAccount } from '../lib/login.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -394,9 +395,70 @@ check(
     && panelPayload.postsTotal === 2 && panelPayload.truncated === false,
   JSON.stringify({ facets: panelPayload.facets, keys: panelPayload.reports && Object.keys(panelPayload.reports) }),
 );
+// —— 扫码登录的纯函数：账号绝不进命令行 ——
+check(
+  'LOGIN_TARGETS 四个平台键齐全',
+  Object.keys(LOGIN_TARGETS).sort().join(',') === 'bilibili,douyin,shipinhao,xhs'
+    && ['douyin', 'xhs', 'bilibili', 'shipinhao'].every((key) => LOGIN_TARGETS[key] && LOGIN_TARGETS[key].platform === key),
+  Object.keys(LOGIN_TARGETS).join(','),
+);
+check(
+  '有采集器的平台脚本都在 scripts/ 下',
+  ['douyin', 'xhs', 'bilibili'].every((key) => LOGIN_TARGETS[key].hasCollector === true && LOGIN_TARGETS[key].script.startsWith('scripts/'))
+    && LOGIN_TARGETS.shipinhao.hasCollector === false,
+  JSON.stringify(LOGIN_TARGETS),
+);
+check('Host 侧耐心要长过脚本最长等待（300s）', LOGIN_TIMEOUT_MS > 300000, String(LOGIN_TIMEOUT_MS));
+check('账号名只收安全形状', sanitizeAccount('main') === 'main' && sanitizeAccount('xiao-hao_2') === 'xiao-hao_2', 'main / xiao-hao_2');
+const badAccountSamples = ['../x', 'a b', 'a;rm -rf', '', 'x'.repeat(33), '-lead', null, 42];
+const acceptedBadAccounts = badAccountSamples.filter((value) => sanitizeAccount(value) !== null);
+check('危险账号名一律拒收', acceptedBadAccounts.length === 0, JSON.stringify(acceptedBadAccounts));
+const biliPlan = buildLoginPlan('bilibili', 'main');
+check(
+  'bilibili 的登录命令由纯函数拼好',
+  biliPlan.ok === true && biliPlan.plan.script === 'scripts/bili_sync.py'
+    && biliPlan.plan.account === 'main' && biliPlan.plan.args.join(' ') === 'login --account main',
+  JSON.stringify(biliPlan),
+);
+check('xhs 用 xhs_sync.py 的 login 子命令', buildLoginPlan('xhs', 'main').plan.script === 'scripts/xhs_sync.py', JSON.stringify(buildLoginPlan('xhs', 'main')));
+check('不传账号默认 main', buildLoginPlan('douyin').plan.account === 'main', JSON.stringify(buildLoginPlan('douyin')));
+check('中文平台名也认', buildLoginPlan('B站', 'main').plan.platform === 'bilibili', JSON.stringify(buildLoginPlan('B站', 'main')));
+const noCollectorPlan = buildLoginPlan('shipinhao', 'main');
+check('视频号没有采集脚本 → no-collector', noCollectorPlan.ok === false && noCollectorPlan.code === 'no-collector' && noCollectorPlan.error.length > 0, JSON.stringify(noCollectorPlan));
+const unknownPlan = buildLoginPlan('nope', 'main');
+check('不认识的平台 → bad-platform', unknownPlan.ok === false && unknownPlan.code === 'bad-platform' && unknownPlan.error.length > 0, JSON.stringify(unknownPlan));
+check('坏账号在拼命令行之前就被拦下', buildLoginPlan('bilibili', '../x').code === 'bad-account', JSON.stringify(buildLoginPlan('bilibili', '../x')));
+const loginSamples = {
+  idle: {},
+  running: { phase: 'running', platform: 'bilibili', account: 'main', startedAt: Date.now() },
+  done: { phase: 'done', platform: 'bilibili', account: 'main', startedAt: Date.now() - 5000, finishedAt: Date.now(), exitCode: 0 },
+  failed: { phase: 'failed', platform: 'douyin', account: 'main', exitCode: 1, log: 'boom: 打不开浏览器' },
+};
+const badLoginPhases = [];
+for (const [phase, sample] of Object.entries(loginSamples)) {
+  const described = describeLoginState(sample, Date.now());
+  if (described.phase !== phase || typeof described.message !== 'string' || described.message.length === 0) badLoginPhases.push(phase);
+}
+check('四个阶段的 phase 与 message 都讲得清', badLoginPhases.length === 0, badLoginPhases.join(','));
+check('done 的文案说清凭据落在哪', describeLoginState(loginSamples.done).message === '已保存凭据：config/bilibili_main.txt', describeLoginState(loginSamples.done).message);
+check('failed 的文案取脚本报错的最后一行', describeLoginState(loginSamples.failed).message.includes('打不开浏览器'), describeLoginState(loginSamples.failed).message);
+check('running 的文案让用户去扫码', describeLoginState(loginSamples.running).message === '已打开浏览器窗口，请在浏览器里扫码', describeLoginState(loginSamples.running).message);
+check(
+  'running 拖过了超时线就按超时判失败',
+  describeLoginState({ phase: 'running', platform: 'bilibili', account: 'main', startedAt: 1000 }, 1000 + LOGIN_TIMEOUT_MS + 60000).phase === 'failed',
+);
+const qrSample = path.join(panelDir, 'bili-qr-main.png');
+check('从日志里抓得到二维码图片路径', extractQrPath('  二维码图片：' + qrSample) === qrSample, String(extractQrPath('  二维码图片：' + qrSample)));
+check('日志里的凭据值被丢掉', filterLoginLog('a\nSESSDATA=leak\nb').split('\n').join(',') === 'a,b', filterLoginLog('a\nSESSDATA=leak\nb'));
+check('log 只留尾部 2000 字符', describeLoginState({ phase: 'failed', log: 'x'.repeat(5000) }).log.length === 2000, String(describeLoginState({ phase: 'failed', log: 'x'.repeat(5000) }).log.length));
+
 const routes = makeBridgeRoutes({ get: () => undefined }, { dataDir: panelDir });
-check('桥只开两条路由', routes.length === 2 && routes.every((route) => route.kind === 'exact' && route.path.startsWith(BRIDGE_PREFIX)), routes.map((r) => r.path).join(','));
-check('桥路由名对得上客户端', routes.map((route) => route.path).join(',') === `${BRIDGE_PREFIX}/state,${BRIDGE_PREFIX}/sidebar`);
+check('桥只开四条路由', routes.length === 4 && routes.every((route) => route.kind === 'exact' && route.path.startsWith(BRIDGE_PREFIX)), routes.map((r) => r.path).join(','));
+check(
+  '桥路由名对得上客户端',
+  routes.map((route) => route.path).join(',') === `${BRIDGE_PREFIX}/state,${BRIDGE_PREFIX}/sidebar,${BRIDGE_PREFIX}/login,${BRIDGE_PREFIX}/login/state`,
+  routes.map((route) => route.path).join(','),
+);
 const fakeRes = () => {
   const out = { statusCode: 0, headers: {}, body: '' };
   out.setHeader = (key, value) => {
@@ -411,6 +473,18 @@ const stateRes = fakeRes();
 routes[0].handler({ method: 'GET' }, stateRes);
 const stateBody = JSON.parse(stateRes.body);
 check('GET state 返回 ok 与面板数据', stateRes.statusCode === 200 && stateBody.ok === true && stateBody.posts.length === 2, stateBody.error || '');
+check(
+  'GET state 顺带给出登录进度（没登录过就是 idle）',
+  stateBody.login && stateBody.login.phase === 'idle' && typeof stateBody.login.message === 'string' && stateBody.login.message.length > 0
+    && stateBody.login.exitCode === null && stateBody.login.log === '',
+  JSON.stringify(stateBody.login),
+);
+// 其余字段一个都不许少：login 是新增的顶层键，不是替换
+check(
+  'login 只是顶上多一个键，别的字段照旧',
+  ['bindings', 'platforms', 'posts', 'reports', 'facets', 'postsTotal', 'truncated', 'sidebar', 'dataDir'].every((key) => key in stateBody),
+  Object.keys(stateBody).join(','),
+);
 
 // 绑定状态走真目录：config/ 里只认 .txt，且只取名字与时间（绝不读内容）
 const wsDir = path.join(dir, 'binding-ws');
@@ -459,6 +533,76 @@ await routes[1].handler(
   noEditorRes,
 );
 check('没有 configEditor 时说清保存不了', noEditorRes.statusCode === 200 && JSON.parse(noEditorRes.body).code === 'no-config-editor', noEditorRes.body);
+
+// —— 扫码登录的两条路由：坏输入一律 200 + ok:false，绝不真起 python ——
+const loginGetRes = fakeRes();
+routes[2].handler({ method: 'GET' }, loginGetRes);
+check('GET /login 只认 POST', loginGetRes.statusCode === 405, String(loginGetRes.statusCode));
+const badPlatformRes = fakeRes();
+await routes[2].handler(
+  {
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler('{"platform":"nope","account":"main"}');
+      if (event === 'end') handler();
+    },
+  },
+  badPlatformRes,
+);
+const badPlatformBody = JSON.parse(badPlatformRes.body);
+check(
+  'POST /login 认不出的平台 → 200 + bad-platform',
+  badPlatformRes.statusCode === 200 && badPlatformBody.ok === false && badPlatformBody.code === 'bad-platform' && badPlatformBody.error.length > 0,
+  badPlatformRes.body,
+);
+const noCollectorRes = fakeRes();
+await routes[2].handler(
+  {
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler('{"platform":"shipinhao","account":"main"}');
+      if (event === 'end') handler();
+    },
+  },
+  noCollectorRes,
+);
+check('POST /login 视频号 → no-collector', JSON.parse(noCollectorRes.body).code === 'no-collector', noCollectorRes.body);
+const badAccountRes = fakeRes();
+await routes[2].handler(
+  {
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler('{"platform":"bilibili","account":"../x"}');
+      if (event === 'end') handler();
+    },
+  },
+  badAccountRes,
+);
+check('POST /login 坏账号 → bad-account（没起进程）', JSON.parse(badAccountRes.body).code === 'bad-account', badAccountRes.body);
+const badJsonRes = fakeRes();
+await routes[2].handler(
+  {
+    method: 'POST',
+    on: (event, handler) => {
+      if (event === 'data') handler('not json at all');
+      if (event === 'end') handler();
+    },
+  },
+  badJsonRes,
+);
+check('POST /login 坏 JSON → 400', badJsonRes.statusCode === 400 && JSON.parse(badJsonRes.body).code === 'bad-request', badJsonRes.body);
+const loginStateRes = fakeRes();
+routes[3].handler({ method: 'GET' }, loginStateRes);
+const loginStateBody = JSON.parse(loginStateRes.body);
+check(
+  'GET /login/state 坏请求之后仍然是 idle',
+  loginStateRes.statusCode === 200 && loginStateBody.ok === true && loginStateBody.login.phase === 'idle',
+  loginStateRes.body,
+);
+const loginStateWrongRes = fakeRes();
+routes[3].handler({ method: 'POST' }, loginStateWrongRes);
+check('GET /login/state 拒绝别的 method', loginStateWrongRes.statusCode === 405, String(loginStateWrongRes.statusCode));
+
 
 // —— 侧栏面板的客户端 bundle：DSH 的 module loader 契约 ——
 const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
@@ -541,21 +685,37 @@ check(
 );
 
 // —— 隐私：不外传、不落仓库 ——
-const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js', 'lib/douyin.js', 'lib/xiaohongshu.js'];
-const forbidden = [
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/login.js', 'lib/bilibili.js', 'lib/douyin.js', 'lib/xiaohongshu.js'];
+// 出网：所有文件都不许，这条没有例外
+const netPatterns = [
   /\bfetch\s*\(/,
   /new\s+WebSocket/,
   /XMLHttpRequest/,
-  /from\s+'node:(http|https|net|dns|tls|child_process)'/,
-  /require\(\s*['"](http|https|net|dns|tls|child_process)['"]\s*\)/,
   /['"]axios['"]/,
+  /from\s+'node:(http|https|net|dns|tls)'/,
+  /require\(\s*['"](http|https|net|dns|tls)['"]\s*\)/,
+];
+// 起进程：铁律是零。唯一窄例外是 lib/bridge.js 里那个白名单登录脚本（用户 2026-11-18 批准），
+// 所以只豁免 bridge.js 一个文件，别的文件连 execFile / spawnSync 都不许碰。
+const processPatterns = [
+  /node:child_process/,
+  /require\(\s*['"]child_process['"]\s*\)/,
+  /\bexecSync\b|\bexecFileSync\b|\bspawnSync\b/,
 ];
 const leaked = [];
 for (const rel of codeFiles) {
   const text = fs.readFileSync(path.join(pkgRoot, rel), 'utf8');
-  for (const pattern of forbidden) if (pattern.test(text)) leaked.push(`${rel} 命中 ${pattern}`);
+  for (const pattern of netPatterns) if (pattern.test(text)) leaked.push(`${rel} 命中 ${pattern}`);
+  if (rel === 'lib/bridge.js') continue;
+  for (const pattern of processPatterns) if (pattern.test(text)) leaked.push(`${rel} 命中 ${pattern}`);
 }
-check('代码里没有出网/起进程的路子', leaked.length === 0, leaked.join('；'));
+check('代码里没有出网的路子', leaked.length === 0, leaked.join('；'));
+const childProcessOwners = codeFiles.filter((rel) => /node:child_process/.test(fs.readFileSync(path.join(pkgRoot, rel), 'utf8')));
+check('node:child_process 只在 lib/bridge.js 出现', childProcessOwners.join(',') === 'lib/bridge.js', childProcessOwners.join(','));
+const bridgeSourceText = fs.readFileSync(path.join(pkgRoot, 'lib/bridge.js'), 'utf8');
+const spawnCallCount = bridgeSourceText.split('spawn(').length - 1;
+check('子进程只在一个地方起，且只起一次', spawnCallCount === 1, `spawn( 出现 ${spawnCallCount} 次`);
+check('起进程绝不经过 shell', !/shell\s*:\s*true/.test(bridgeSourceText), 'bridge.js 里出现 shell: true');
 
 const savedDir = process.env.DSH_MEDIA_LEDGER_DIR;
 delete process.env.DSH_MEDIA_LEDGER_DIR;

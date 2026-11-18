@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 
-import { makeBridgeRoutes } from './lib/bridge.js';
+import { disposeLogin, makeBridgeRoutes } from './lib/bridge.js';
 import { resolveConfig } from './lib/config.js';
 import { registerTools } from './lib/tool.js';
 
@@ -77,6 +77,12 @@ export function apply(ctx, rawConfig) {
           } catch {
             // 同上：回收失败不阻塞
           }
+        }
+        // 扫码登录的脚本还在跑就掐掉：宿主卸载后不该留下一个孤儿进程抢浏览器
+        try {
+          disposeLogin();
+        } catch {
+          // 同上：回收失败不阻塞
         }
       };
     }, 'media-ledger: panel bridge');
