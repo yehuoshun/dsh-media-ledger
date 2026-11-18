@@ -47,10 +47,11 @@ Python 脚本（唯一联网的地方）  →  <工作区根>/tmp/<平台>-impor
 ## 依赖
 
 - Python 3.12（脚本只用标准库）
-- `qrcode` + `pillow`：**可选，只有 `login` 用**，在函数里懒加载，`fetch` 不付这个导入开销。没装也能登录——`login` 会退回用浏览器打开同一个扫码地址（见流程第 1 步）
+- **默认路径不需要任何第三方包**：`login` 拉起本机 Chrome/Edge 打开 B站官方登录页，你在窗口里扫码，脚本通过 CDP 轮询 cookie（CDP 用的 WebSocket 是 `xhs_browser.py` 里手写的，纯标准库）
+- `qrcode` + `pillow`：**只有退路 `login --qr` 需要**（不借浏览器、纯 HTTP 申请二维码再渲染成 PNG）。不装也能用面板的「扫码登录」——它走默认的浏览器路径
 
 ```
-python -m pip install qrcode pillow
+python -m pip install qrcode pillow   # 只在你要用 login --qr 时安装
 ```
 
 ## 路径约定
@@ -61,7 +62,7 @@ python -m pip install qrcode pillow
 | 用途 | 位置 |
 |---|---|
 | 凭据（cookie） | `<工作区根>\config\bilibili_<account>.txt` |
-| 登录二维码图片 | `<工作区根>\tmp\bili-qr-<account>.png` |
+| 登录二维码图片（仅 `login --qr`） | `<工作区根>\tmp\bili-qr-<account>.png` |
 | `fetch` 默认输出 | `<工作区根>\tmp\bili-import.json` |
 | `--out` 相对路径 | 按**当前工作目录**解析（不是按脚本目录） |
 
@@ -79,19 +80,28 @@ python scripts/bili_sync.py login --account work
 
 流程：
 
-1. 向 B站申请登录二维码，用 `qrcode` 渲染成 PNG 存到 `<工作区根>\tmp\bili-qr-<account>.png`，
-   终端同时打印**图片路径**和**二维码内容 URL**（URL 里带 `qrcode_key`，可以自己核对确认不是钓鱼）。
-   没装 `qrcode`/`pillow` 不报错：改成**用浏览器打开同一个扫码地址**（页面里就是同一张二维码），
-   脚本继续轮询 `qrcode_key` 等手机端确认——所以面板那个「扫码登录」在任何一台上都能用。
-2. 打开那个 PNG，用**B站手机客户端**扫码并确认登录。
-3. 脚本每 2 秒查一次扫码状态，最长等 5 分钟：
-   - 未扫码 → 继续等（状态行会打「等待扫码…」）
-   - 已扫码待确认 → 状态行会打「已扫码，等待手机端确认…」
-   - 二维码失效（B站约 3 分钟过期）→ 退出码 `4`，重新跑一次 `login` 即可
-4. 成功后补一次 `finger/spi` 拿 `buvid3`/`buvid4`（缺了这两个，部分接口会当匿名请求），
+默认路径（借浏览器扫码，不需要任何第三方包）：
+
+1. 拉起本机 Chrome/Edge（临时 profile，不碰你日常浏览器的登录态），打开
+   `https://passport.bilibili.com/login`——**页面自己渲染二维码**，不用我们画。
+2. 你在那个窗口里用**B站手机客户端**扫码并确认。
+3. 脚本通过 CDP 每 2 秒查一次 `bilibili.com` 域的 cookie，等 `SESSDATA` 出现，最长等 `--timeout` 秒
+   （默认 300）。进度行每 10 秒打一次「已等 N/M 秒（bilibili.com 域已有 cookie K 个）」；
+   超时退出码 `4`，重跑一次 `login` 即可。窗口关早了也一样：脚本会告诉你等了多久、手里有哪些 cookie。
+4. 成功后缺 `buvid3`/`buvid4` 就补一次 `finger/spi`（缺了这两个，部分接口会当匿名请求），
    把 cookie 序列化成一行 `k=v; k=v` 写进 `<工作区根>\config\bilibili_<account>.txt`
    （UTF-8、无 BOM、无换行结尾），最后调 `nav` 接口验证 `isLogin == true`，
    打印 `昵称(mid)` 与 `level` 后返回 0。
+
+**退路 `login --qr`**：不借浏览器，直接打 B站二维码接口、用 `qrcode` 渲染成 PNG 存到
+`<工作区根>\tmp\bili-qr-<account>.png`，终端打印图片路径与二维码内容 URL（URL 里带 `qrcode_key`，
+可以自己核对不是钓鱼），再每 2 秒轮询扫码状态。这条路要装 `qrcode` + `pillow`；没装会直接报错并给出两条选择
+（装包后重跑 `--qr`，或去掉 `--qr` 走浏览器）。
+
+⚠️ 面板上的「扫码登录」走的是**默认浏览器路径**，不要改回 `--qr`。2026-11-18 用户报的「B站扫码登录有 bug」
+就是这么来的：当时缺 `qrcode` 时退化成「用浏览器打开二维码内容 URL」，而那个 URL 是**手机端扫完码之后才打开的
+H5 页**（`account.bilibili.com/h5/account-h5/auth/scan-web?...`），桌面浏览器打开是空白页，永远等不到扫码，只能等到超时。
+二维码内容 ≠ 可扫码的页面。
 
 **cookie 值永远不会打印**：终端里只出现字段名和长度，例如 `SESSDATA(len=222)，bili_jct(len=32)，…`。
 要判断「是不是过期了 / 字段全不全」，看这串名字和长度就够了。
@@ -173,7 +183,7 @@ max=50 时约 155 次请求，光节流就 ≥ 54 秒
 | `1` | 一般错误：网络不通、接口 `code != 0`、参数不合法、文件读写失败 | 看 stderr 的错误原文 |
 | `2` | 凭据失效：`-101`（未登录/已过期）或 `nav.isLogin != true` | 重新跑 `login` |
 | `3` | 被风控：`-352` / `-412`（含 HTTP 412） | 降频，见下 |
-| `4` | 二维码失效（`86038`） | 重新跑 `login` 换一张码 |
+| `4` | 等待扫码超时；`--qr` 路径下还包括二维码失效（`86038`） | 重新跑 `login` 换一次 |
 
 ### 遇到 `-101`（退出码 2）：cookie 过期
 
@@ -292,8 +302,8 @@ media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
 
 | | `bili_sync.py`（B站） | `douyin_sync.py`（抖音） |
 |---|---|---|
-| 登录 | 脚本自己申请二维码 PNG，手机扫 | **拉起本机 Chrome/Edge**，你在窗口里扫码，脚本通过 CDP 轮询状态 |
-| 第三方依赖 | `qrcode` + `pillow`（只 `login` 用） | **无**，纯标准库（CDP 用的 WebSocket 是手写的） |
+| 登录 | **拉起本机 Chrome/Edge** 打开官方登录页，你在窗口里扫码，脚本通过 CDP 轮询 cookie（`--qr` 才走纯 HTTP + PNG） | **拉起本机 Chrome/Edge**，你在窗口里扫码，脚本通过 CDP 轮询状态 |
+| 第三方依赖 | 默认**无**；只有 `login --qr` 要 `qrcode` + `pillow` | **无**，纯标准库（CDP 用的 WebSocket 是手写的） |
 | 凭据文件 | `config\bilibili_<account>.txt`，一行 `k=v; k=v` | `config\douyin_<account>.txt`，JSON 对象 |
 | `fetch` 默认产物 | `tmp\bili-import.json` | `tmp\douyin-import.json` |
 | 采集方式 | 每稿 3 个接口（实时/结算/画像） | 列表 + 按批详情，指标只有一份 |
