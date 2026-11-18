@@ -155,7 +155,7 @@ const importOk = imported.ok === true
   && imported.platform === 'xhs'
   && imported.createdCount === 1
   && imported.updatedCount === 1
-  && imported.updated[0].note_id === 'mocknote0001'
+  && imported.updated[0].platformId === 'mocknote0001'
   && imported.updated[0].play === 1200;
 console.log(`import_xhs → 新建 ${imported.createdCount} 条 / 更新 ${imported.updatedCount} 条${importOk ? ' ✓' : ` ✗ ${JSON.stringify(imported)}`}`);
 

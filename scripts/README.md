@@ -1,4 +1,4 @@
-# scripts —— 采集器（B站 / 小红书）
+# scripts —— 采集器（B站 / 抖音 / 小红书）
 
 **独立的 Python 脚本**，负责「登录 + 把创作中心的数据抓成本地 JSON」这一件事。
 插件本体不碰它们、不 import 它们，两边只通过一个 JSON 文件交接。
@@ -266,3 +266,218 @@ media action=import_xhs path="<工作区根>\tmp\xhs-notes-<时间>.json"
 - 脚本**从不打印 cookie 值**，只打印字段名与长度。
 - 请求头里的 UA 写死在脚本里（不读环境变量），保证行为可复现、好排查。
 - 输出 JSON 里只有你自己的稿件数据，**不要**把它提交进仓库（`tmp/` 已被忽略）。
+
+## 抖音采集脚本 douyin_sync.py
+
+`scripts/` 里的第二个采集器，做同一件事：**登录 + 把作品数据抓成本地 JSON**，插件再用纯函数离线灌进台账。
+两个脚本只是放在同一目录，**互不 import、不共享代码、可以单独升级**。
+
+| | `bili_sync.py`（B站） | `douyin_sync.py`（抖音） |
+|---|---|---|
+| 登录 | 脚本自己申请二维码 PNG，手机扫 | **拉起本机 Chrome/Edge**，你在窗口里扫码，脚本通过 CDP 轮询状态 |
+| 第三方依赖 | `qrcode` + `pillow`（只 `login` 用） | **无**，纯标准库（CDP 用的 WebSocket 是手写的） |
+| 凭据文件 | `config\bilibili_<account>.txt`，一行 `k=v; k=v` | `config\douyin_<account>.txt`，JSON 对象 |
+| `fetch` 默认产物 | `tmp\bili-import.json` | `tmp\douyin-import.json` |
+| 采集方式 | 每稿 3 个接口（实时/结算/画像） | 列表 + 按批详情，指标只有一份 |
+
+**为什么抖音必须借浏览器**：`/passport/web/get_qrcode/` 被 passport 风控恒定拦截 ——
+HTTP 200 + `{"data":{"error_code":4031,"description":"您正在尝试访问的网站存在安全风险..."},"message":"error"}`，
+补 ttwid、浏览器指纹头、csrf 都不行。纯 HTTP 申请二维码这条路是死的，所以改成「用浏览器自己的登录态」：
+你在弹出的窗口里扫码，脚本等作品列表接口不再返回未登录码，就把浏览器里的 cookie 取出来落盘。
+
+### 依赖
+
+- Python 3.12，**只用标准库**（`urllib` 发请求，`socket` + `struct` 手写 RFC6455 客户端说 CDP）
+- `login` 需要本机装有 Chrome 或 Edge；`fetch` / `whoami` / `selftest` 都不需要浏览器
+
+### 路径约定
+
+工作区根的定位规则和 B 站脚本完全一致（从脚本自身向上找「同层既有 `AGENTS.md` 又有 `code/`」）：
+
+| 用途 | 位置 |
+|---|---|
+| 凭据（cookie） | `<工作区根>\config\douyin_<account>.txt` |
+| 浏览器独立 profile | `<工作区根>\tmp\douyin-profile-<account>\` |
+| `fetch` 默认输出 | `<工作区根>\tmp\douyin-import.json` |
+| `--out` 相对路径 | 按**当前工作目录**解析（不是按脚本目录） |
+
+`<account>` 默认 `main`，只允许字母、数字、下划线、短横线，长度 1–32（和 B 站脚本同一条规则）。
+浏览器 profile 放在 `tmp/` 下：它随时可以整目录删掉，删了下次 `login` 会重建一个干净的。
+
+### 子命令
+
+```
+python scripts/douyin_sync.py login      # 扫码登录，写凭据
+python scripts/douyin_sync.py fetch      # 采集作品列表 + 指标，出 JSON
+python scripts/douyin_sync.py whoami     # 只验证凭据还有效，不写任何文件
+python scripts/douyin_sync.py selftest   # 本地假服务自检（不联网、不开浏览器）
+```
+
+### login：浏览器 CDP 扫码登录
+
+```
+python scripts/douyin_sync.py login
+python scripts/douyin_sync.py login --account work --port 9333
+python scripts/douyin_sync.py login --browser "D:\Portable\chrome.exe"
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--account NAME` | `main` | 决定凭据文件名 `douyin_<NAME>.txt` |
+| `--port PORT` | `9222` | 浏览器远程调试端口；被占用就换一个（如 `9333`） |
+| `--browser PATH` | 自动探测 | 先 `C:\Program Files\Google\Chrome\Application\chrome.exe`，再 `(x86)` 的 Edge |
+| `--timeout SEC` | `180` | 等扫码的最长秒数，超时退出码 `4` |
+| `--force` | 关 | 已有凭据且仍有效时也重新扫 |
+
+流程：
+
+1. 探测浏览器可执行文件（都找不到就报错，提示用 `--browser` 指定）。
+2. 用**独立 profile** 启动：`--remote-debugging-port=<port> --user-data-dir=<工作区根>\tmp\douyin-profile-<account>`
+   加 `--no-first-run --no-default-browser-check --disable-blink-features=AutomationControlled`，
+   直接打开 `https://creator.douyin.com/creator-micro/content/manage`。
+   **不碰你自己开着的窗口**：脚本只 kill 自己启动的那个 pid，退出时也不会关你的浏览器。
+3. stderr 打印「已打开浏览器，请扫码：在弹出的窗口里用抖音 App 扫码登录（最长等 180 秒）」。
+4. 轮询 `127.0.0.1:<port>/json/list` 找到页面 target，连上手写的最小 WebSocket 客户端，
+   发 `Runtime.evaluate` 在页面里 `fetch` 一次 `work_list` 并 await：
+   **返回的 `status_code` 不再是 8 就算登录成功**（比盯 URL 变化可靠）。
+5. 成功后 `Storage.getCookies` 取出 douyin.com 的 cookie，按字段名排序写成 JSON 到
+   `config\douyin_<account>.txt`，再用命令行带这份 cookie 复核一次 `work_list`；
+   终端只打印**字段名与长度**（例如 `sessionid(len=32)，ttwid(len=64)`），然后关掉浏览器。
+
+已经登录过（凭据文件存在且 `work_list` 能返回非 8）会直接提示「已登录，无需重扫」，要重扫加 `--force`。
+
+### fetch：采集数据
+
+```
+python scripts/douyin_sync.py fetch                        # 最近 50 条，写到 tmp\douyin-import.json
+python scripts/douyin_sync.py fetch --max 10               # 只要最近 10 条（调试用）
+python scripts/douyin_sync.py fetch --out tmp\dy-20261118.json
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--account NAME` | `main` | 读 `config\douyin_<NAME>.txt` |
+| `--max N` | `50` | 按发布时间倒序最多采多少篇，上限 `200` |
+| `--sleep SEC` | `0.35` | 两次请求之间的最小间隔，**不要调到 0.35 以下** |
+| `--out PATH` | `<工作区根>\tmp\douyin-import.json` | 输出路径；相对路径按当前目录解析 |
+| `--base-url URL` | `https://creator.douyin.com` | 只用于排查和自检，平时别动 |
+
+请求量与耗时（请求之间强制 ≥ 0.35 秒）：
+
+```
+1 次探针 + 1 次账号信息 + ceil(max/20) 页列表 + ceil(max/20) 批详情
+max=50 时约 8 次请求，光节流就 ≥ 2.5 秒（比 B 站那套轻得多：指标集中在详情接口里）
+```
+
+进度打在 **stderr**（`[3/50] 7300000000000000000`），摘要打在 stdout
+（`已写出：…（50 条作品，7 条降级提示）` 加前 20 条提示），要静默跑可以 `2>$null`。
+
+列表接口的平台参数以 `aid=1128&device_platform=android`（浏览器 prefetch 里的原值）为主，
+第一次请求异常时自动回退到 `aid=2906&device_platform=web` 重试一次，回退会记在 `warnings` 里。
+
+### 输出 JSON
+
+顶层四个键，字段名是下游解析契约，**不要改**：
+
+```json
+{
+  "generated_at": "2026-11-18 08:30",
+  "account": {"uid": "1234567890", "name": "示例账号", "follower": 1234},
+  "posts": [ … ],
+  "warnings": ["…"]
+}
+```
+
+`posts[]` 每项：`aweme_id`（字符串）/ `desc`（文案首行）/ `create_time`（**Unix 秒**）/ `media_type` /
+`duration`（**毫秒**）/ `cover`（URL）/ `share_url`（`https://www.douyin.com/video/<aweme_id>`）/
+`metrics{view_count,like_count,comment_count,share_count,favorite_count,completion_rate,avg_view_second}` /
+`statistics{play_count,digg_count,comment_count,share_count}` / `review{status}` / `visibility{status}`。
+
+三条读法上的约定（和 B 站脚本同一套）：
+
+- **缺失写 `null`，不写 0**。抖音后台「还没算出来」和「真的是 0」在接口里长得一样，
+  `null` 就是没有，`0` 就是零。下游做均值/率时必须先过滤 `null`，否则会把缺数据当成「真没人看」。
+- **单位统一在脚本里做完**：`create_time` 一律秒（接口给毫秒时按 `> 1e11` 判断后 ÷1000）；
+  `duration` 一律毫秒；`completion_rate` 一律**百分比数值**（`38.2` 表示 38.2%）。
+- **降级都记在 `warnings`**：例如「7300…: 详情接口没返回这一条，metrics 写 null」。
+  有 warning 不代表失败——数据能落盘、缺失项是 `null`，就返回 0。
+
+### 哪些键名还是猜的（重要）
+
+`item/mget` 登录后的 `items[]` 结构**没有生产样本可验证**（写脚本时手上没有真 cookie）。
+所以脚本对每个字段都写成**候选路径表**，按顺序取第一个非空值，全取不到就写 `null`，
+并把整串候选键名记进 `warnings`——**不会硬编码一套猜的键名然后静默全 null**。
+
+| 输出字段 | 候选取值顺序（前几个） |
+|---|---|
+| `metrics.view_count` | `metrics.view_count` → `statistics.play_count` → `play_count` → `metrics.play_count` → `statistics.view_count` |
+| `metrics.like_count` | `metrics.like_count` → `statistics.digg_count` → `digg_count` → `metrics.digg_count` |
+| `metrics.comment_count` / `share_count` | `metrics.*` → `statistics.*` → 顶层 `*` |
+| `metrics.favorite_count` | `metrics.favorite_count` → `statistics.collect_count` → `collect_count` → `metrics.collect_count` |
+| `metrics.completion_rate` | `metrics.completion_rate` → `metrics.finish_rate` → `review.`/`play_info.` 同名键 |
+| `metrics.avg_view_second` | `metrics.avg_view_second` → `metrics.avg_play_time` → `play_info.avg_view_second` → `metrics.avg_view_duration` → `metrics.avg_view_ms` |
+| `review.status` / `visibility.status` | `review.status` / `audit.status` / `review_status`；`visibility.status` / `visibility_status` / … |
+| `duration` / `create_time` / `cover` | 列表优先、详情兜底；`cover` 认 `video.cover.url_list.0` 这类嵌套路径 |
+
+**两个「口径靠猜」的地方会写进 warnings**（真拿到数据后应该回头看这两条，然后修正）：
+
+- `completion_rate` 如果接口给的是 `0..1` 的比例（如 `0.382`），脚本 **×100** 存成 `38.2`，
+  并记一条「按比例猜成百分比（×100=38.2，口径未实测）」；本来就是百分数就原样保留、不记 warning。
+- `avg_view_second` 如果值看起来是毫秒（键名带 `_ms` 或数值 ≥ 1000），脚本会 ÷1000 存成秒，并记一条 warning。
+
+拿到第一条真实样本后，把命中的那条候选路径提到该字段候选表的**最前面**即可（顺手删掉没用的候选）。
+
+### 退出码
+
+| 码 | 含义 | 怎么办 |
+|---|---|---|
+| `0` | 成功（含「部分作品详情缺失，已写 null 并记 warning」） | —— |
+| `1` | 一般错误：网络不通、接口返回意料外的状态码、参数不合法、凭据文件缺失、文件读写失败 | 看 stderr 的错误原文 |
+| `2` | 未登录 / 凭据失效：接口返回 `status_code == 8`（含 `BaseResp.StatusCode`） | 重新跑 `login` |
+| `3` | 被风控：`status_code` 命中 `352` / `412` / `2154` | 降频，见下 |
+| `4` | `login` 等扫码超时（默认 180 秒） | 重新跑 `login`，扫码快一点或加 `--timeout` |
+
+`status_code == 8` **不重试**（重试只会让风控记住你），直接按凭据失效退出；网络类异常才重试 2 次（退避 0.8s / 1.6s）。
+
+### 遇到 `status_code = 8`（退出码 2）：cookie 过期
+
+```
+python scripts/douyin_sync.py login
+python scripts/douyin_sync.py fetch
+```
+
+脚本不会自己续期、也不碰账号密码，只有扫码一条路；凭据只落在本机 `config\`。
+
+### 遇到 `352` / `412` / `2154`（退出码 3）：被风控
+
+1. **停手 10–30 分钟**，不要重试——重试继续加分，小问题拖成整段接口不可用。
+2. 降低单次采集量：`--max 10`，一天内别反复跑同一个账号。
+3. 确认不是网页版/APP 同时高频操作（同账号并发最容易被盯）。
+4. 持续一天以上就去网页版确认账号是否被要求验证（滑块/短信），手动过一次再试。
+
+脚本这边已做的防护：请求之间强制 ≥ 0.35 秒、传输层错误最多重试 2 次、
+`status_code != 0` 一律不重试、列表翻页有 `--max 200` 的保险丝。
+
+### selftest：自检（不联网、不开浏览器）
+
+```
+python scripts/douyin_sync.py selftest
+# selftest: 25/25 passed
+```
+
+用 `http.server` 在 `127.0.0.1` 起一个假创作中心（作品列表翻两页 12 + 3 条、`item/mget` 返回假指标且校验
+`Agw-Js-Conv: str` 请求头、外加一个未登录分支），把真实 `fetch` 链路完整跑一遍，断言：
+顶层键与 `posts[]`/`metrics`/`statistics` 的键集合、翻页次数与批量大小、`create_time` 是秒级
+（毫秒被 ÷1000）、`duration` 保持毫秒、`completion_rate` 把 `0.382` 猜成 `38.2` 并记 warning、
+`metrics` 回退到 `statistics`、缺详情时 `metrics` 为 `null`、缺字段是 `null` 不是 `0`、
+`--max` 生效、**未登录时 `work_list` 只请求一次不重试且退出码为 2**、stdout 不含 cookie 值。
+全程只走本地回环，环境变量用完即还原，临时目录自己清掉。
+
+### 安全与隐私
+
+- cookie 只写 `<工作区根>\config\`，不进仓库；`.gitignore` 另有一层兜底但别依赖它。
+- 脚本**从不打印 cookie 值**，只打印字段名与长度。
+- 浏览器是**独立 profile**（`tmp\douyin-profile-<account>\`），不读你的日常浏览器配置；
+  脚本只 kill 自己启动的那个 pid，不会关掉你正在用的窗口。
+- 请求头 UA 写死在脚本里（不读环境变量），行为可复现、好排查。
+- 输出 JSON 里只有你自己的作品数据，**不要**提交进仓库（`tmp/` 已被忽略）。

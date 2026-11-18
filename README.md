@@ -77,8 +77,9 @@
 | `list` | 查台账（可按平台筛） | — |
 | `report` | 出复盘 | —（可选 `group_by`、`max_age_hours`） |
 | `pack` | 生成发布包 | `platform`、`title` |
-| `import_bili` | 灌 B站采集 JSON | `path`（可 `dry_run`） |
-| `import_xhs` | 灌小红书采集 JSON | `path`（可 `dry_run`） |
+| `import_bili` | 把 B站采集脚本产出的 JSON 灌进台账 | `path`（可选 `dry_run`、`create_missing`） |
+| `import_douyin` | 把抖音采集脚本产出的 JSON 灌进台账 | `path`（可选 `dry_run`、`create_missing`） |
+| `import_xhs` | 把小红书采集脚本产出的 JSON 灌进台账 | `path`（可选 `dry_run`、`create_missing`） |
 
 数字可以直接写平台显示值：`2.4w`、`1.2万`、`3,456`、`12k` 都会换算，读不懂时报错而不是记 0。
 
@@ -112,8 +113,8 @@ media(action: "report", group_by: "kind")
 | `captured_at` | 报数时刻（**真时间**，取最新快照用） |
 | `play` / `like` / `comment` / `share` / `collect` | 播放、赞、评、转、藏 |
 | `fans` | 涨粉（归档用） |
-| `source` | 后台导出 / 手抄 / `B站接口` |
-| `extras` | 附带口径（可选）：B站导入时放 `settled`（结算值：`play_settled` / `view_dedup` / `progress_pct` / 粉丝路人拆分）与 `diagnose`（画像：性别、年龄、地区、标签、平台占比、受众构成），台账统计不读它 |
+| `source` | 后台导出 / 手抄 / `B站接口` / `抖音接口` |
+| `extras` | 附带口径（可选）：B站导入时放 `settled`（结算值：`play_settled` / `view_dedup` / `progress_pct` / 粉丝路人拆分）与 `diagnose`（画像：性别、年龄、地区、标签、平台占比、受众构成）；抖音导入时放 `douyin`（完播率、平均观看秒数、时长、媒体类型、审核状态、可见状态、列表粗值），台账统计不读它 |
 
 三条口径（都是踩过坑才定下来的）：
 
@@ -164,6 +165,32 @@ media { action: "import_xhs", path: "<工作区根>\tmp\xhs-notes-<时间>.json"
 
 
 
+## 抖音数据同步（采集脚本在插件外）
+
+形状和 B站一样：脚本抓、工具灌，中间一份 JSON。差别在**登录**——抖音 passport 对纯 HTTP 申请二维码恒定返回
+`error_code: 4031`（「网站存在安全风险已阻止此次访问」，带 ttwid / 指纹头 / csrf 都过不去），所以 `login` 走浏览器：
+
+```powershell
+# 1. 采集（会起一个独立 profile 的 Chrome/Edge 让你扫码，扫完自动取 cookie 并关掉）
+python scripts\douyin_sync.py login                     # 凭据落到 <工作区根>\config\douyin_main.txt
+python scripts\douyin_sync.py fetch --max 50            # 产出 <工作区根>\tmp\douyin-import.json
+python scripts\douyin_sync.py whoami                    # 只看当前 cookie 是谁、有没有过期
+
+# 2. 入库（纯离线：读 JSON、写 JSONL，不发请求）
+media { action: "import_douyin", path: "<工作区根>\tmp\douyin-import.json" }
+media { action: "import_douyin", path: "…", dry_run: true }
+```
+
+登录不需要 API 签名：`work_list` 与 `item/mget` 都不在 secsdk 的 `web_protect` 白名单里（白名单只有 14 条，全是写操作和
+`user/info`），带 cookie 就够了。退码同样分档：`0` 成功 / `1` 一般错误 / `2` 未登录（`status_code==8`，不重试）/
+`3` 风控 / `4` 扫码超时。
+
+口径上抖音的坑不在「一套数据三个值」，而在**字段不稳定**：创作者中心的接口清单由 prefetch 配置下发、字段名随端漂移，
+所以 `lib/douyin.js` 用的是候选链（`metrics.view_count` → `metrics.play_count` → `statistics.play_count` …），
+取到粗值会记 warning，一个值都没有就整条不落盘（**绝不写 0**）。`completion_rate` 是 0~1 小数，入库前乘 100 并记一条警告。
+
+---
+
 ## 隐私：数据不出本机
 
 - **不联网**：插件代码里没有 `fetch` / `http` / `https` / `net` / `child_process`，没有任何出网路径，也没有第三方依赖（`dependencies` 为空）。`test/smoke.mjs` 里有一条断言守着这个事实，谁哪天加了出网代码，测试会先挂。
@@ -194,6 +221,7 @@ lib/metrics.js     时间解析、最新快照、中位数、互动率、分组�
 lib/pack.js        发布包文本 + 标题/话题/封面的机械校验
 lib/bilibili.js    B站采集产出的 JSON → 台账记录（纯函数映射，不联网）
 lib/xiaohongshu.js 小红书导出产出的 JSON → 台账记录（纯函数映射，不联网）
+lib/douyin.js      抖音采集产出的 JSON → 台账记录（纯函数映射，同一套归一形状，不联网）
 lib/tool.js        唯一工具 media（action 分派）
 lib/panel.js       面板数据整形（筛选树 facets + 每个切片的复盘，只搬运 metrics 的口径，不另算指标）
 lib/bridge.js      Host 侧面板桥：/api/dsh-media-ledger/state 与 /sidebar
@@ -209,6 +237,7 @@ scripts/bili_sync.py       B站采集脚本（独立进程，插件本体不联�
 scripts/xhs_sync.py        小红书采集脚本（走页面导出 xlsx）
 scripts/xhs_login.py       小红书扫码登录（借本机浏览器 CDP）
 scripts/xhs_browser.py     最小 CDP 客户端（起 Chrome/Edge、灌 cookie、点按钮、收下载）
+scripts/douyin_sync.py     抖音采集脚本（独立进程，扫码走浏览器 CDP，插件本体不联网）
 scripts/README.md          采集脚本的用法、接口清单与口径说明
 AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私、详情页契约、验收命令）
 ```
@@ -223,7 +252,7 @@ AGENTS.md          仓库约束：改代码 / 提交前先读（数据与隐私�
 $env:ELECTRON_RUN_AS_NODE = "1"
 $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自己的安装路径
 
-& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约（含真跑一遍）+ 详情页校验，全过 124/124
+& $node "test\smoke.mjs"      # 纯函数冒烟 + 隐私断言 + 桥路由 + 客户端 bundle 契约（含真跑一遍）+ 详情页校验，全过 141/141
 & $node "test\activate.mjs"   # 假 ctx 跑 apply：注册 / 执行 / 渲染 / 错误路径 / 回收
 ```
 
@@ -235,5 +264,6 @@ $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自�
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
 - 左侧栏面板已做（0.4.0）：左导航（台账 / 复盘切换 + 平台 → 账号两级筛选）+ 右内容（当前切片的台账或复盘），页内「在左侧栏显示」开关写回 `sidebar` 配置。数据走两条本机路由，不联网。
 - B站数据同步已做（0.3.0）：`scripts/bili_sync.py` 采集（独立进程、扫码登录、只读），`import_bili` 纯离线灌进台账；实时/结算两套口径分开存，图片与地区画像进 `extras`。真账号跑过 3 条稿件，重跑幂等。
+- 抖音数据同步已做：`scripts/douyin_sync.py` 采集（独立进程、扫码走浏览器 CDP、只读），`import_douyin` 纯离线灌进台账；字段用候选链兜住不稳定的键名，粗值与缺值都记警告、不写 0。**真实键名待第一次带 cookie 跑完 `fetch` 回看 warnings 后定稿。**
 - 小红书数据同步已做：扫码登录（借本机浏览器）→ 页面「导出数据」下 xlsx → `scripts/xhs_sync.py` 解析成 JSON → `import_xhs` 灌进台账。真账号跑过 2 条笔记；签名逆不动这件事写进了 [`docs/XHS_API.md`](docs/XHS_API.md)。
 - npm 包名待定（`dsh-media-ledger` 这个名字在 npm 上可用，但暂不发布）。

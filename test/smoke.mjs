@@ -18,6 +18,7 @@ import { appendJsonl, findWorkspaceRoot, loadLedger, nextPostId, resolveDataDir,
 import { buildPanel, parseSlice, POST_LIMIT } from '../lib/panel.js';
 import { matchPost, normalizeImport, progressPercent, tsToLocal } from '../lib/bilibili.js';
 import { kindOf, matchPost as matchXhsPost, normalizeImport as normalizeXhsImport, toPostRecord as toXhsPost } from '../lib/xiaohongshu.js';
+import { matchPost as dyMatchPost, normalizeImport as dyNormalize, percentOf, secondsOf } from '../lib/douyin.js';
 import { BRIDGE_PREFIX, makeBridgeRoutes, readPanel, sidebarEnabled } from '../lib/bridge.js';
 
 const dir = path.join(os.tmpdir(), `ml-smoke-${Date.now()}`);
@@ -243,6 +244,59 @@ const xhsPosts = [
 check('小红书按 note_id 匹配已有作品（url 兜底）', matchXhsPost(xhsPosts, 'mocknote0001').id === 'p0001');
 check('小红书按 platform_id 优先匹配', matchXhsPost(xhsPosts, 'mocknote0002').id === 'p0002');
 check('小红书匹配不到返回 null', matchXhsPost(xhsPosts, 'mocknote9999') === null);
+// —— 抖音导入：键名候选回退、缺值不写 0、图集识别、秒/毫秒都吃 ——
+const mockDouyin = {
+  generated_at: '2026-11-18 09:00',
+  account: { uid: 'mock-uid', name: 'mock-douyin' },
+  posts: [
+    {
+      aweme_id: '7300000000000000001',
+      desc: 'mock 详情有 metrics 的作品\n#mock话题',
+      create_time: 1794560515,
+      media_type: 0,
+      duration: 12345,
+      metrics: { view_count: 1200, like_count: 33, comment_count: 2, share_count: 4, favorite_count: 5, completion_rate: 0.382, avg_view_second: 7.3 },
+      statistics: { play_count: 1180, digg_count: 30 },
+      review: { status: 2 },
+      visibility: { status: 0 },
+    },
+    {
+      aweme_id: '7300000000000000002',
+      desc: 'mock 只有列表粗值的图集',
+      create_time: 1794560515000,
+      media_type: 2,
+      statistics: { play_count: 90, digg_count: 1 },
+    },
+    { aweme_id: '', desc: 'mock 没 aweme_id 的脏数据' },
+    { aweme_id: '7300000000000000003', desc: 'mock 一个数都没有' },
+  ],
+  warnings: ['上游提醒：详情接口超时'],
+};
+const mockDy = dyNormalize(mockDouyin);
+check('抖音导入过滤脏数据', mockDy.rows.length === 2, String(mockDy.rows.length));
+const mockDyFirst = mockDy.rows[0];
+check('抖音快照优先用详情 metrics', mockDyFirst.metric.play === 1200 && mockDyFirst.metric.like === 33, JSON.stringify([mockDyFirst.metric.play, mockDyFirst.metric.like]));
+check('抖音列表粗值只进 extras', mockDyFirst.metric.extras.douyin.listed.play === 1180);
+const mockDySecond = mockDy.rows[1].metric;
+check('抖音详情缺了就用列表粗值并告警', mockDySecond.play === 90 && mockDy.warnings.some((line) => line.includes('7300000000000000002') && line.includes('statistics.')), JSON.stringify(mockDy.warnings));
+check('抖音缺值不写 0', !('collect' in mockDySecond) && !('comment' in mockDySecond), JSON.stringify(mockDySecond));
+check('抖音比例型完播率换算成百分比', mockDyFirst.metric.extras.douyin.completion_rate === 38.2, String(mockDyFirst.metric.extras.douyin.completion_rate));
+check('抖音图集认成图文', mockDy.rows[1].post.kind === '图文' && mockDyFirst.post.kind === '视频');
+check('抖音毫秒时间戳也认', mockDy.rows[1].post.published_at === tsToLocal(1794560515), mockDy.rows[1].post.published_at);
+check('抖音标题取文案首行', mockDyFirst.post.title === 'mock 详情有 metrics 的作品', mockDyFirst.post.title);
+check('抖音作品记录带 douyin 平台与 aweme_id', mockDyFirst.post.platform === 'douyin' && mockDyFirst.post.platform_id === '7300000000000000001');
+check('抖音作品的 url 兜底到分享页', mockDyFirst.post.url === 'https://www.douyin.com/video/7300000000000000001', mockDyFirst.post.url);
+check('抖音空导入不抛异常', dyNormalize(null).rows.length === 0 && dyNormalize({}).warnings.length > 0);
+check('百分比换算工具两种输入都认', percentOf(38.2).value === 38.2 && percentOf(0.382).scaled === true && percentOf(null).value === undefined);
+check('秒/毫秒时间戳都能归一', secondsOf(1794560515) === 1794560515 && secondsOf(1794560515000) === 1794560515);
+
+const mockDyPosts = [
+  { id: 'p0009', platform: 'douyin', url: 'https://www.douyin.com/video/7300000000000000001' },
+  { id: 'p0010', platform: 'douyin', platform_id: '7300000000000000002', url: 'https://example.invalid/elsewhere' },
+];
+check('抖音按 platform_id 优先匹配', dyMatchPost(mockDyPosts, '7300000000000000002').id === 'p0010');
+check('抖音 url 兜底匹配', dyMatchPost(mockDyPosts, '7300000000000000001').id === 'p0009');
+check('抖音匹配不到返回 null', dyMatchPost(mockDyPosts, '7300000000000000999') === null);
 
 // —— 面板数据：整形只搬运口径，不另算一套 ——
 const panelPosts = [
@@ -388,7 +442,7 @@ check(
 );
 
 // —— 隐私：不外传、不落仓库 ——
-const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js', 'lib/xiaohongshu.js'];
+const codeFiles = ['index.js', 'lib/util.js', 'lib/config.js', 'lib/store.js', 'lib/metrics.js', 'lib/pack.js', 'lib/tool.js', 'lib/panel.js', 'lib/bridge.js', 'lib/bilibili.js', 'lib/douyin.js', 'lib/xiaohongshu.js'];
 const forbidden = [
   /\bfetch\s*\(/,
   /new\s+WebSocket/,
