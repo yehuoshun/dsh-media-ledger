@@ -177,6 +177,39 @@ def credential_path(account: str) -> Path:
     return workspace_paths()["config_dir"] / f"bilibili_{account}.txt"
 
 
+def identity_path(account: str) -> Path:
+    """登录身份旁路文件：只记「这个号是谁」，一个 cookie 都不放。
+
+    凭据文件名只能表达别名（`main`），表达不了「这其实是 bili_90709929644」。
+    面板要区分两个号就必须知道真实身份，而身份不能从 cookie 里读（§5：凭据内容不出 Host），
+    所以登录成功后由脚本另写一份 <凭据>.identity.json，面板只读这一份。
+    """
+    return workspace_paths()["config_dir"] / f"bilibili_{account}.identity.json"
+
+
+def save_identity(account: str, nav_data: dict) -> Path:
+    """把 nav 验到的真实身份落盘；写不进去只警告——登录本身已经成功了。"""
+    target = identity_path(account)
+    payload = {
+        "platform": "bilibili",
+        "account": account,
+        "uname": str(nav_data.get("uname") or ""),
+        "mid": nav_data.get("mid"),
+        "level": nav_data.get("level"),
+        "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as error:
+        print(f"  警告：身份文件写不进去（{error}），面板会看不出这个号是谁", flush=True)
+        return target
+    print(f"  身份已记下：{payload['uname'] or '（没给昵称）'}（{target.name}）", flush=True)
+    return target
+
+
 def qr_image_path(account: str) -> Path:
     return workspace_paths()["tmp_dir"] / f"bili-qr-{account}.png"
 
@@ -557,7 +590,7 @@ def cmd_login_browser(args) -> int:
     path = save_credential(account, cookie_line)
     print(f"  已写入凭据：{path}")
     print(f"  字段：{describe_cookie_line(cookie_line)}", flush=True)
-    verify_login_state(cookie_line)
+    save_identity(account, verify_login_state(cookie_line))
     return EXIT_OK
 
 
@@ -721,8 +754,8 @@ def cmd_login_http(args) -> int:
     print(f"  已写入凭据：{path}")
     print(f"  字段：{describe_cookie_line(cookie_line)}", flush=True)
 
-    # 6) 用 nav 验证一次
-    verify_login_state(cookie_line)
+    # 6) 用 nav 验证一次，顺手把真实身份记到 <凭据>.identity.json
+    save_identity(account, verify_login_state(cookie_line))
     return EXIT_OK
 
 
