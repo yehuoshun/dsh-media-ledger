@@ -22,6 +22,8 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 
 **面板已经存在**（2026-11-18，用户点名要左侧栏入口 + 开关；同日又按用户要求改成「左导航 + 右内容」）：左侧栏图标「自媒体台账」→ 主区左栏切视图（台账 / 复盘）与筛选（平台 → 账号两级树），右栏只看当前切片；页内一个「在左侧栏显示」开关。视图与筛选都是浏览器里的 `useState`，**不改地址、不新增路由**；每个切片的复盘由 Host 用同一套 `buildReport` 算好，前端不自己算指标。**不要自己扩成独立页面体系**：不加路由、不加第二个面板、不做图表库；要加内容先问用户——这是本项目被纠正过两次的地方（用户原话：「回滚，你都没问我」「我问你的是dsh插件，你在做什么？」）。
 
+**登录也收进了面板（0.5.2 的窄例外）**：平台未绑定时，空态里与右栏顶部提示条上各有一个「扫码登录」按钮——Host 起一次白名单 `spawn` 跑对应脚本的 `login` 子命令（B站 `scripts/bili_sync.py login`、抖音 `scripts/douyin_sync.py login`、小红书 `scripts/xhs_sync.py login`），浏览器窗口由用户自己扫码，凭据落到 `config/<平台>_<账号>.txt`（账号名固定 `main`，面板不放输入框），轮询到成功后面板自己把标签翻成「已绑定」。视频号没有采集脚本，那个位置改成一句说明文字。这是 §5 里「不起进程」的唯一例外，**不要**把它长成通用命令执行器。
+
 ---
 
 ## 2. 目录与文件职责
@@ -39,7 +41,7 @@ DSH 插件：把四个平台（抖音 / 小红书 / B站 / 视频号）的作品
 | `lib/tool.js` | 工具定义：参数 schema、action 分发、错误收敛成 `{ ok:false, error }` |
 | `lib/panel.js` | 面板数据整形：`toPanelPost` / `buildFacets`（平台 → 账号两级树）/ `buildPanel`（每个切片一份 `buildReport`，**不另算一套指标**）/ `parseSlice` |
 | `lib/bindings.js` | 面板绑定状态：凭据文件名 → 平台/账号、有无采集脚本、空态三步文案（纯函数，只吃目录清单，不读凭据内容） |
-| `lib/bridge.js` | Host 侧面板桥：`GET /api/dsh-media-ledger/state`（面板数据）、`POST .../sidebar`（写开关）；`sidebarEnabled` / `readPanel` / `saveSidebar` |
+| `lib/bridge.js` | Host 侧面板桥：`GET /api/dsh-media-ledger/state`（面板数据，含顶层 `login` 字段）、`POST .../sidebar`（写开关）、`POST .../login`（按白名单起一次登录脚本）、`GET .../login/state`（登录进度）；`sidebarEnabled` / `readPanel` / `saveSidebar`。**全仓库唯一允许 `spawn` 的文件** |
 | `lib/client.js` | 浏览器侧 bundle：`window.__ModuleLoader__.load({ id: 'dsh-media-ledger', factory })`，注册 `sidebar.panellist`（图标「自媒体台账」）+ `main`（面板页）+ 命令 `media-ledger-sidebar` |
 | `lib/util.js` | `parseCount`（`2.4w` / `1.2万`）、`toLossless` |
 | `locale/{zh,en}.json` | 插件元数据（`meta.description` / `meta.detail` 等） |
@@ -68,7 +70,7 @@ $env:ELECTRON_RUN_AS_NODE = "1"
 & "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe" "test\activate.mjs"
 ```
 
-- 期望：`smoke.mjs` → **全过 157/157**（含面板整形与筛选树、桥路由、客户端 bundle 契约与「真跑一遍 bundle」、B站/抖音/小红书 JSON 映射）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、桥路由 `/api/dsh-media-ledger/state` 与 `/api/dsh-media-ledger/sidebar`、`import_xhs` 端到端、卸载后工具与桥路由都回收。
+- 期望：`smoke.mjs` → **全过**（断言条数运行即得，别在这里写死分母；覆盖面板整形与筛选树、桥路由、客户端 bundle 契约与「真跑一遍 bundle」、B站/抖音/小红书 JSON 映射，以及登录例外的三组断言）；`activate.mjs` → 注册名 `media-ledger`、`inject=["tools"]`、工具名 `media`、28 个参数键、四条桥路由（`/api/dsh-media-ledger/state`、`/sidebar`、`/login`、`/login/state`）、`import_xhs` 端到端、卸载后工具与桥路由都回收。
 - **改任何 `lib/*.js` 后必须重跑这两条**，两条都过才算改完。新增行为必须同时加断言——本项目的规矩是「口头保证不算，能跑挂的断言才算」。
 - PowerShell 下判成功别信 exit code（`git push`、Unicode 输出都可能骗人），见 §7。
 
@@ -104,10 +106,10 @@ plugin_manager install_bundle(target="<本仓库目录>")
 
 ## 5. 数据与隐私（铁律）
 
-用户明确要求过「隐私数据不上传」。这条已经写成 `test/smoke.mjs` 里的 5 条断言，别绕过去。
+用户明确要求过「隐私数据不上传」。这条已经写成 `test/smoke.mjs` 里的隐私断言（不联网、默认不起进程、无第三方依赖……），别绕过去。
 
 1. **不联网**：`index.js` 与 `lib/*.js` 里不得出现 `fetch(` / `WebSocket` / `XMLHttpRequest` / `node:http(s)` / `node:net` / `node:dns` / `node:tls` / `axios`。真要联网，先停下来问用户，并同步删掉那条断言。
-2. **不起进程**：不得 `node:child_process`。
+2. **默认不起进程；唯一例外是登录**：`lib/bridge.js` 里允许用 `node:child_process` `spawn` 一次 `scripts/` 下的白名单登录脚本（用户 2026-11-18 批准），只此一处、只此用途，`lib/` 其他文件与 `index.js` 仍然零 `child_process`，shell 一律不开；`smoke.mjs` 里有断言守着（bridge 之外零命中、`spawn` 只出现一次、无 `shell:true`）。
 3. **无第三方依赖**：`package.json` 不放 `dependencies`（宿主带什么就用什么）。
 4. **台账不落仓库**：`resolveDataDir(config)` 的优先级是 `config.dataDir` → `DSH_MEDIA_LEDGER_DIR` → `<工作区根>/data/media-ledger` → `~/media-ledger`。工作区根优先取宿主注入的提示（`index.js` 把 `ctx.get('workspaceRegistry')` 包成惰性函数塞进 `config.workspaceRoot`，桌面版插件进程的 cwd 不在工作区，光靠 cwd 找不到），取不到才用 `findWorkspaceRoot()` 从 cwd 向上找「同层既有 `AGENTS.md` 又有 `code/` 或 `work/`」的目录，找不到才退回用户目录——这两种位置都在仓库外；只认这两个标记，插件仓库自己不会被当成工作区根。任何人把 `dataDir` 指进仓库，`.gitignore` 必须仍能挡住。
 5. **真实数据一律不入库**：真实账号名、播放/涨粉原始导出、cookie、token、手机号、本机绝对路径（带盘符的那种）、本机私有项目名都不许提交。测试数据必须一眼可辨是假数据（命名含 `mock`/`fake`/`demo`/`example`，或注释写明）。
@@ -117,8 +119,8 @@ plugin_manager install_bundle(target="<本仓库目录>")
 
 ## 6. 代码约定
 
-- `lib/` 只放**纯函数**：不做 IO、不读环境、不联网，方便在 `smoke.mjs` 里直接测。例外只有三个，别扩大到别的文件：`store.js`（读写 JSONL）、`tool.js`（工具 IO 收敛）、`bridge.js`（Host 侧那两条本机路由的读写）；`client.js` 是浏览器 bundle，跑在页面里，不参与 Node 侧纯函数规则。
-- `lib/bridge.js` 的路由**只部署在宿主自己的 webServer 上**，不 import `node:http`、不向外发请求；面板要的数据只能从这两条路由出，不要为了少写一个字段去开第三条。`POST /sidebar` 的请求体只认 `{"value": true|false}`，别把入参反射成路径或文件名。
+- `lib/` 只放**纯函数**：不做 IO、不读环境、不联网，方便在 `smoke.mjs` 里直接测。例外只有三个，别扩大到别的文件：`store.js`（读写 JSONL）、`tool.js`（工具 IO 收敛）、`bridge.js`（Host 侧四条本机路由的读写 + 登录那一次 `spawn`）；`client.js` 是浏览器 bundle，跑在页面里，不参与 Node 侧纯函数规则。
+- `lib/bridge.js` 的路由**只部署在宿主自己的 webServer 上**，不 import `node:http`、不向外发请求；面板要的数据只能从这四条路由出，不要为了少写一个字段去开第五条。`POST /sidebar` 的请求体只认 `{"value": true|false}`；`POST /login` 只认 `{"platform": "bilibili"|"douyin"|"xhs", "account": "main"}`，`platform` 走白名单（视频号没有脚本，直接回 `no-collector`），`account` 走 `^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`；`GET /login/state` 不收任何参数。别把入参反射成路径、文件名或命令参数——`spawn` 的命令与参数写死在白名单里，`shell` 永不开。
 - 工具错误统一 `return { ok: false, error: '…' }`，**不要 throw**（throw 会让整个工具调用失败，用户看不到可读原因）。
 - 工具参数 `additionalProperties: false`、`required: ['action']`、action 用枚举。新增 action 要一次改齐四处：`lib/tool.js` 的枚举与分发、参数键、`locale/{zh,en}.json` 的描述、`test/smoke.mjs` 或 `test/activate.mjs` 的断言。
 - 数字口径不要随手改，改了必须在提交信息里写清为什么，并同步改断言：互动率**分子分母取同一批行**且只算 `play > 0`；快照取 `captured_at` 真正最新的那条（不是文件里最后一行）；T+ 龄期现算而不是信上报值。
