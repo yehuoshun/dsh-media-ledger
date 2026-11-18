@@ -375,7 +375,9 @@ check(
 check(
   '没凭据＝未绑定并给出下一步',
   bindingList[0].status === 'unbound' && bindingList[0].credentials.length === 0 && bindingList[0].steps.length === 3
-    && bindingList[0].steps[1].includes('scripts/douyin_sync.py')
+    && bindingList[0].steps[0].includes('扫码登录')
+    && bindingList[0].steps[1].includes('采集并导入')
+    && bindingList[0].steps[2].includes('scripts/douyin_sync.py')
     && bindingList[0].statusText.includes('douyin_'),
   JSON.stringify(bindingList[0]),
 );

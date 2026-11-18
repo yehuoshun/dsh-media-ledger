@@ -71,7 +71,7 @@
 | 标签 | 含义 | 点进去看到什么 |
 |---|---|---|
 | 已绑定 | `config/<平台>_<账号>.txt` 存在 | 台账（有数据就是表，没数据就是空态 + 采集三步） |
-| 未绑定 | 采集脚本在，但 `config/` 里没有对应凭据 | 空态先写「config 里没有 `bilibili_<账号>.txt`」，再给一个「扫码登录」按钮和剩下的手工步骤：`login --account <账号>` → `fetch --account <账号> --max 50` → 让 agent 用 `media` 调平台对应的 `import_bili` / `import_douyin` / `import_xhs` |
+| 未绑定 | 采集脚本在，但 `config/` 里没有对应凭据 | 空态先写「config 里没有 `bilibili_<账号>.txt`」，再给一个「扫码登录」按钮，下面是三步按钮流程：填账号名 → 手机扫码 → 登录后点该行的「采集并导入」（最多 50 条、自动灌台账）；要历史或更多条才需要命令行 `fetch --account <账号> --max 100` 再让 agent 调 `import_bili` / `import_douyin` / `import_xhs` |
 | 未接入 | 还没有采集脚本（目前是视频号） | 空态说明只有台账侧，暂时只能手工 `add_post`；没有「扫码登录」按钮，那个位置是一句说明文字 |
 
 身份旁路文件（`config/<平台>_<账号>.identity.json`）是这条规则唯一的例外：Host 会读它的 `uname`/`mid`，但也只到这两个字段为止——它是**展示用的别名来源**，不是凭据，丢了、坏了都只影响昵称显示，不影响绑定与采集。
@@ -287,6 +287,7 @@ $node = "<DeepSeek Harness 安装目录>\DeepSeek Harness.exe"   # 换成你自�
 ## 状态
 
 - Host 侧工具已跑通（`add_post` / `add_metrics` / `list` / `report` / `pack` 全部自证）。
+- 空态文案跟着按钮走（0.5.8）：0.5.7 加了「采集并导入」之后，未绑定空态还在教「login → fetch --max 50 → 让 agent 调 import_*」的老三步，末句还无条件挂一句「手工记一条也可以」，等于面板把人赶回命令行。现在三步改成「扫码登录 → 点该行的采集并导入 → 要历史才走命令行」，手工记账只留给没有采集脚本的平台。
 - 采集并导入 + 解绑已做（0.5.7）：面板上每个已绑定账号两个按钮——「采集并导入」手动起一次白名单 `fetch`（`--max 50`，产出落工作区根 `tmp/panel-fetch-<平台>-<账号>.json`），Host 读回后用 `importCollectorOutput` 灌台账并回「新建 X / 更新 Y」；退出码非 0 一律不导入，`account` 覆盖成凭据别名而不是平台昵称。「解绑」只删 `config/<平台>_<账号>.txt` 与 `.identity.json` 两份文件，台账一行不动。两条路都要宿主注入的工作区根，拿不到就拒绝执行。同一时间只跑一个任务（登录与采集共用槽，采集上限 30 分钟，有任务在跑时解绑被挡住），桥路由从四条增到七条。
 - 凭据文件统一 JSON（0.5.6）：B站/小红书/抖音三个采集脚本现在都写「一个 JSON 对象」（`config/<平台>_<账号>.txt`，缩进 2、UTF-8 无 BOM、以换行结尾），旧的一行 `k=v; k=v` 仍能读，所以升级后不用重扫码。B站 `save_credential` 收键值对、`load_credential` 返回 `(cookie 头, 键值对)`，小红书 `save_cookie_line` 同样改写 JSON。
 - 绑定显示真实昵称（0.5.5）：B站 `login` 验证通过后把身份写进 `config/bilibili_<账号>.identity.json`（只有 `uname`/`mid`/`level`，无 cookie），面板读它把账号显示成「main（昵称）」——左栏「已绑定·无数据」的账号、登录框里的快捷标签都带昵称。文件缺了不影响任何功能，只是少一个别名。
